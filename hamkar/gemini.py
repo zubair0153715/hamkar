@@ -193,6 +193,31 @@ def run_routine(bot, routine, language="en"):
     return clean, None
 
 
+def run_automation(bot, automation, language="en"):
+    """Run one Automation now. Returns (result, error) in the same
+    shape as chat()."""
+    bot, err = engine.validate_bot(bot)
+    if err:
+        return None, err
+    automation, err = engine.validate_automation(automation)
+    if err:
+        return None, err
+    if language not in engine.LANGUAGES:
+        return None, "Language ghalat hai."
+    prompt = engine.build_automation_prompt(bot, automation, language)
+    raw, err = _call_text(prompt, max_tokens=2500, temperature=0.7)
+    if err:
+        return None, err
+    data, err = _parse_json(raw)
+    if err:
+        return None, err
+    clean, err = engine.validate_reply(data)
+    if err:
+        return None, err
+    clean["language"] = language
+    return clean, None
+
+
 def propose_action(bot, memory, summary, history, instruction,
                    language="en"):
     """Draft one action (email/message/plan/note) for the approval

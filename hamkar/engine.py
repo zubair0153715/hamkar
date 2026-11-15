@@ -23,6 +23,7 @@ Design rules (same as the other gap builds):
 """
 
 import re
+import secrets
 from datetime import datetime, timedelta
 
 LANGUAGES = {"en", "roman", "ur"}
@@ -106,8 +107,15 @@ def validate_bot(bot):
     language = bot.get("language") or "en"
     if language not in LANGUAGES:
         language = "en"
+    # v2 — Team Bot fields (optional; defaults keep v1 behaviour).
+    shared = bool(bot.get("shared", False))
+    primary = bool(bot.get("primary", False))
+    learning_opt_in = bool(bot.get("learning_opt_in", False))
+    learned = validate_learned_list(bot.get("learned"))
     return {"id": bid, "name": name, "emoji": emoji, "role": role,
-            "instructions": instructions, "language": language}, None
+            "instructions": instructions, "language": language,
+            "shared": shared, "primary": primary,
+            "learning_opt_in": learning_opt_in, "learned": learned}, None
 
 
 def validate_memory(memory):
@@ -142,26 +150,20 @@ def validate_routine(routine):
     if len(task) < 5:
         return None, "Routine me kaam (task) likhein."
     bot_id = _clean_str(routine.get("bot_id"), 40) or "tehqeeq"
-    schedule = _clean_str(routine.get("schedule"), 30).lower()
-    if schedule == "manual":
-        kind, when = "manual", ""
-    else:
-        m = re.match(r"^(daily|weekdays|weekends|monday|tuesday|wednesday|"
-                     r"thursday|friday|saturday|sunday)\s+(\d{1,2}):(\d{2})$",
-                     schedule)
-        if not m:
-            return None, ("Schedule is tarah likhein: 'daily 08:00', "
-                          "'weekdays 08:00', 'monday 10:30' ya 'manual'.")
-        kind, hh, mm = m.group(1), int(m.group(2)), int(m.group(3))
-        if hh > 23 or mm > 59:
-            return None, "Waqt ghalat hai (ghanta 0-23, minute 0-59)."
-        when = f"{hh:02d}:{mm:02d}"
+    kind, when, err = _parse_schedule(routine.get("schedule"))
+    if err:
+        return None, err
+    schedule = "manual" if kind == "manual" else f"{kind} {when}"
+    # v2 — origin: "chat" = saved from a chat reply, "form" = typed here.
+    origin = _clean_str(routine.get("origin"), 10) or "form"
+    if origin not in ("chat", "form"):
+        origin = "form"
     rid = _clean_str(routine.get("id"), 40)
     if not rid:
         rid = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or "routine"
     return {"id": rid, "name": name, "bot_id": bot_id, "task": task,
-            "schedule": schedule if schedule == "manual" else f"{kind} {when}",
-            "kind": kind, "time": when,
+            "schedule": schedule,
+            "kind": kind, "time": when, "origin": origin,
             "enabled": bool(routine.get("enabled", True))}, None
 
 
@@ -226,7 +228,17 @@ def validate_skill(skill):
     sid = _clean_str(skill.get("id"), 40)
     if not sid:
         sid = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or "skill"
-    return {"id": sid, "name": name, "steps": steps}, None
+    # v2 — file Skills are toggleable and attachable per Bot.
+    enabled = bool(skill.get("enabled", True))
+    bots = skill.get("bots") or []
+    if not isinstance(bots, list):
+        bots = []
+    bots = [_clean_str(b, 40) for b in bots if isinstance(b, str)]
+    bots = [b for b in bots if b][:MAX_BOTS]
+    return {"id": sid, "name": name, "steps": steps, "enabled": enabled,
+            "bots": bots,
+            "source": _clean_str(skill.get("source"), 10) or "taught",
+            "filename": _clean_str(skill.get("filename"), 120)}, None
 
 
 def validate_action(data):
@@ -442,3 +454,608 @@ def build_handoff_brief(source_bot, summary, history):
     if history:
         lines.append("Last turns:\n" + _history_block(history[-4:]))
     return "\n".join(lines)
+
+
+# ======================================================================
+# v2 — Grok Bot 1.0 feature parity (clean-room, from the REA feature
+# spec in ~/workspace/rea/grokbot-rea-report-2026-11-15.md).
+# Nothing here copies Grok Bot's code, text or design — only the
+# feature *category* is the same, implemented our own way, local-first.
+# ======================================================================
+
+def _parse_schedule(schedule):
+    """Shared schedule parser for Routines and time Automations.
+    Returns (kind, when, error)."""
+    schedule = (schedule or "").strip().lower()
+    if schedule == "manual":
+        return "manual", "", None
+    m = re.match(r"^(daily|weekdays|weekends|monday|tuesday|wednesday|"
+                 r"thursday|friday|saturday|sunday)\s+(\d{1,2}):(\d{2})$",
+                 schedule)
+    if not m:
+        return None, "", ("Schedule is tarah likhein: 'daily 08:00', "
+                          "'weekdays 08:00', 'monday 10:30' ya 'manual'.")
+    kind, hh, mm = m.group(1), int(m.group(2)), int(m.group(3))
+    if hh > 23 or mm > 59:
+        return None, "", "Waqt ghalat hai (ghanta 0-23, minute 0-59)."
+    return kind, f"{hh:02d}:{mm:02d}", None
+
+
+# --- v2.1 Approvals as a first-class data object ---------------------------
+# Grok Bot's sharpest design (REA §4.6): every tool call is a
+# structured, approvable record. v1 only had draft proposals in a
+# queue; v2 makes the Approval itself the record — tool, args,
+# target, state, and a per-bot+tool "always allow" memory. A Bot
+# never acts; it asks, and the record is what the user decides on.
+
+APPROVAL_TOOLS = {
+    "send_email", "access_files", "delete_files", "change_app",
+    "run_command", "use_computer", "save_routine", "share_bot",
+    "use_cloud_agent", "use_server", "use_connected_app",
+    "run_background_task", "send_feedback", "save_meeting_note",
+    "request_credential",
+    "draft_email", "draft_message", "plan", "summary_note",
+}
+APPROVAL_STATES = {"pending", "approved", "denied"}
+MAX_APPROVAL_ARGS = 10
+MAX_ARG_LEN = 500
+
+
+def validate_approval(appr):
+    """Validate an Approval record. Returns (clean, error)."""
+    if not isinstance(appr, dict):
+        return None, "Approval ghalat hai."
+    tool = _clean_str(appr.get("tool"), 40)
+    if tool not in APPROVAL_TOOLS:
+        return None, "Approval ka tool ghalat hai."
+    state = _clean_str(appr.get("state"), 20) or "pending"
+    if state not in APPROVAL_STATES:
+        return None, "Approval ki state ghalat hai."
+    args = appr.get("args") or {}
+    if not isinstance(args, dict):
+        return None, "Approval ke args ghalat hain."
+    clean_args = {}
+    for k, v in list(args.items())[:MAX_APPROVAL_ARGS]:
+        if not isinstance(k, str):
+            continue
+        clean_args[_clean_str(k, 40)] = _clean_str(v, MAX_ARG_LEN)
+    aid = _clean_str(appr.get("id"), 60)
+    if not aid:
+        aid = "ap-" + datetime.now().strftime("%Y%m%d%H%M%S%f")
+    return {"id": aid,
+            "bot_id": _clean_str(appr.get("bot_id"), 40),
+            "bot": _clean_str(appr.get("bot"), MAX_BOT_NAME) or "Bot",
+            "tool": tool, "args": clean_args,
+            "target": _clean_str(appr.get("target"), 200),
+            "state": state,
+            "always_allow": bool(appr.get("always_allow", False)),
+            "ts": _clean_str(appr.get("ts"), 40),
+            "decided_ts": _clean_str(appr.get("decided_ts"), 40)}, None
+
+
+def approval_from_action(bot, action):
+    """Turn a proposed action draft into an Approval record (tool =
+    the draft type, args carry title/body)."""
+    action, err = validate_action(action)
+    if err:
+        return None, err
+    bot, err = validate_bot(bot)
+    if err:
+        return None, err
+    appr = {"id": "ap-" + datetime.now().strftime("%Y%m%d%H%M%S%f"),
+            "bot_id": bot["id"], "bot": bot["name"],
+            "tool": action["type"],
+            "args": {"title": action["title"], "body": action["body"]},
+            "target": "", "state": "pending", "always_allow": False,
+            "ts": datetime.now().isoformat(), "decided_ts": ""}
+    return appr, None
+
+
+def decide_approval(appr, decision, always_allow=False):
+    """Decide a pending Approval. Only pending → approved/denied.
+    Returns (clean, error)."""
+    appr, err = validate_approval(appr)
+    if err:
+        return None, err
+    if appr["state"] != "pending":
+        return None, "Is approval ka faisla ho chuka hai."
+    decision = (decision or "").strip().lower()
+    if decision not in ("approved", "denied"):
+        return None, "Faisla 'approved' ya 'denied' ho."
+    appr["state"] = decision
+    appr["always_allow"] = (bool(always_allow)
+                            if decision == "approved" else False)
+    appr["decided_ts"] = datetime.now().isoformat()
+    return appr, None
+
+
+def always_allow_key(bot_id, tool, target=""):
+    """The always-allow memory key: bot + tool + target."""
+    return f"{bot_id}|{tool}|{target}"
+
+
+def approval_matches_allow(appr, allow_keys):
+    """True when a pending Approval is covered by an always-allow
+    memory entry (same bot + tool + target)."""
+    if not isinstance(allow_keys, list):
+        return False
+    return always_allow_key(appr.get("bot_id", ""), appr.get("tool", ""),
+                            appr.get("target", "")) in allow_keys
+
+
+def approval_summary(appr):
+    """One-line human summary of an Approval for its card."""
+    tool = (appr or {}).get("tool", "?")
+    target = (appr or {}).get("target", "")
+    bot = (appr or {}).get("bot", "Bot")
+    bits = [f"{bot} wants to {tool.replace('_', ' ')}"]
+    if target:
+        bits.append(f"on {target}")
+    args = (appr or {}).get("args") or {}
+    if args.get("title"):
+        bits.append(f"— {args['title']}")
+    return " ".join(bits)
+
+
+# --- v2.2 Automations (structured) vs Routines (chat-defined) ---------------
+# Grok keeps both (REA §4.3–4.4): Routines are saved by asking in
+# chat; Automations are CRUD objects with a trigger catalog, run
+# history, pause, manual run and a rotatable webhook secret. v1
+# conflated them; v2 splits them.
+
+AUTOMATION_TRIGGERS = {"time", "manual", "webhook"}
+MAX_AUTOMATIONS = 50
+MAX_RUNS = 50
+
+
+def validate_automation(auto):
+    """Validate an Automation. Returns (clean, error)."""
+    if not isinstance(auto, dict):
+        return None, "Automation ghalat hai."
+    name = _clean_str(auto.get("name"), 80)
+    if len(name) < 2:
+        return None, "Automation ka naam kam se kam 2 harf ka ho."
+    task = _clean_str(auto.get("task"), MAX_MESSAGE)
+    if len(task) < 5:
+        return None, "Automation me kaam (task) likhein."
+    bot_id = _clean_str(auto.get("bot_id"), 40) or "tehqeeq"
+    trigger = _clean_str(auto.get("trigger"), 20) or "manual"
+    if trigger not in AUTOMATION_TRIGGERS:
+        return None, "Trigger 'time', 'manual' ya 'webhook' ho."
+    kind, when = "manual", ""
+    secret = ""
+    if trigger == "time":
+        kind, when, err = _parse_schedule(auto.get("schedule"))
+        if err:
+            return None, err
+        schedule = f"{kind} {when}"
+    elif trigger == "webhook":
+        schedule = "webhook"
+        secret = _clean_str(auto.get("webhook_secret"), 64)
+        if not secret:
+            secret = secrets.token_hex(16)
+    else:
+        schedule = "manual"
+    aid = _clean_str(auto.get("id"), 40)
+    if not aid:
+        aid = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or "auto"
+    return {"id": aid, "name": name, "bot_id": bot_id, "task": task,
+            "trigger": trigger, "schedule": schedule, "kind": kind,
+            "time": when, "webhook_secret": secret,
+            "enabled": bool(auto.get("enabled", True))}, None
+
+
+def automation_due(auto, now):
+    """True when a time-triggered Automation should fire now.
+    Manual and webhook Automations never fire by themselves."""
+    if not auto.get("enabled", True):
+        return False
+    if auto.get("trigger") != "time":
+        return False
+    return routine_due({"kind": auto.get("kind", "manual"),
+                        "time": auto.get("time", ""),
+                        "enabled": True}, now)
+
+
+def rotate_webhook_secret(auto):
+    """Return a copy of the Automation with a fresh webhook secret."""
+    auto, err = validate_automation(auto)
+    if err:
+        return None, err
+    if auto["trigger"] != "webhook":
+        return None, "Sirf webhook Automations ka secret rotate hota hai."
+    auto["webhook_secret"] = secrets.token_hex(16)
+    return auto, None
+
+
+def validate_run_entry(run):
+    """Validate one Automation/Routine run-history entry."""
+    if not isinstance(run, dict):
+        return None, "Run entry ghalat hai."
+    name = (_clean_str(run.get("name"), 80)
+            or _clean_str(run.get("routine"), 80)
+            or _clean_str(run.get("automation"), 80))
+    if not name:
+        return None, "Run entry me naam chahiye."
+    return {"name": name, "ts": _clean_str(run.get("ts"), 40),
+            "ok": bool(run.get("ok", True)),
+            "result": _clean_str(run.get("result"), 500)}, None
+
+
+# --- v2.3 Credentials Vault --------------------------------------------------
+# The rule, from Grok Bot's vault (REA §4.7): "the password never
+# enters the chat". Values live only in the browser vault object;
+# credential_public() strips the value before anything is shown, and
+# redact_secrets() scrubs values out of any text that could reach a
+# chat transcript or a log.
+
+VAULT_TYPES = {"password", "api_key", "token", "other"}
+MAX_VAULT = 50
+MAX_SECRET_LEN = 500
+
+
+def validate_credential(cred):
+    """Validate a Vault entry. Returns (clean, error)."""
+    if not isinstance(cred, dict):
+        return None, "Credential ghalat hai."
+    name = _clean_str(cred.get("name"), 80)
+    if len(name) < 2:
+        return None, "Credential ka naam kam se kam 2 harf ka ho."
+    ctype = _clean_str(cred.get("type"), 20) or "password"
+    if ctype not in VAULT_TYPES:
+        return None, "Credential ki qism ghalat hai."
+    value = cred.get("value")
+    if not isinstance(value, str) or len(value.strip()) < 1:
+        return None, "Credential ki value khaali hai."
+    value = value.strip()[:MAX_SECRET_LEN]
+    cid = _clean_str(cred.get("id"), 40)
+    if not cid:
+        cid = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or "cred"
+    return {"id": cid, "name": name, "type": ctype, "value": value,
+            "created": _clean_str(cred.get("created"), 40)}, None
+
+
+def credential_public(cred):
+    """The shareable view of a Vault entry — NEVER includes value."""
+    if not isinstance(cred, dict):
+        return None
+    return {"id": _clean_str(cred.get("id"), 40),
+            "name": _clean_str(cred.get("name"), 80),
+            "type": _clean_str(cred.get("type"), 20) or "password",
+            "created": _clean_str(cred.get("created"), 40)}
+
+
+def validate_credential_request(req):
+    """A Bot asks for a credential; the user fills it in a dedicated
+    field — never in chat. Returns (clean, error)."""
+    if not isinstance(req, dict):
+        return None, "Request ghalat hai."
+    name = _clean_str(req.get("credential_name"), 80)
+    if len(name) < 2:
+        return None, "Kis credential ki zaroorat hai, wo likhein."
+    reason = _clean_str(req.get("reason"), 300)
+    if len(reason) < 3:
+        return None, "Reason likhein — credential kis kaam ke liye hai."
+    state = _clean_str(req.get("state"), 20) or "pending"
+    if state not in ("pending", "filled", "denied"):
+        return None, "Request ki state ghalat hai."
+    rid = _clean_str(req.get("id"), 40)
+    if not rid:
+        rid = "cr-" + datetime.now().strftime("%Y%m%d%H%M%S%f")
+    return {"id": rid, "bot_id": _clean_str(req.get("bot_id"), 40),
+            "bot": _clean_str(req.get("bot"), MAX_BOT_NAME) or "Bot",
+            "credential_name": name, "reason": reason, "state": state,
+            "ts": _clean_str(req.get("ts"), 40)}, None
+
+
+def redact_secrets(text, values):
+    """Scrub secret values out of text before it reaches a chat
+    transcript or log. Values shorter than 4 chars are ignored (too
+    short to be a secret, too risky to blank common words)."""
+    if not isinstance(text, str):
+        return ""
+    out = text
+    clean_vals = sorted({v for v in (values or [])
+                         if isinstance(v, str) and len(v) >= 4},
+                        key=len, reverse=True)
+    for v in clean_vals:
+        out = out.replace(v, "[redacted]")
+    return out
+
+
+# --- v2.4 Per-Bot workspace ("computer") -------------------------------------
+# Grok Bots share a snapshot-backed cloud computer (REA §4.2). Hamkar
+# has no server, so each Bot gets a local workspace instead: its
+# files + its tools list. "Reset workspace, keep files" is the
+# snapshot idea in miniature — tools reset, files kept.
+
+MAX_WS_FILES = 100
+MAX_WS_FILE_CHARS = 200000
+WS_KINDS = {"text", "markdown", "json", "other"}
+
+
+def workspace_file_kind(filename):
+    name = (filename or "").lower()
+    if name.endswith(".md"):
+        return "markdown"
+    if name.endswith(".json"):
+        return "json"
+    if name.endswith(".txt"):
+        return "text"
+    return "other"
+
+
+def validate_workspace_file(f):
+    """Validate one workspace file. Returns (clean, error)."""
+    if not isinstance(f, dict):
+        return None, "File ghalat hai."
+    name = _clean_str(f.get("name"), 120)
+    if len(name) < 1:
+        return None, "File ka naam chahiye."
+    content = f.get("content")
+    if not isinstance(content, str):
+        return None, "File ka text chahiye."
+    content = content[:MAX_WS_FILE_CHARS]
+    fid = _clean_str(f.get("id"), 60)
+    if not fid:
+        fid = re.sub(r"[^a-z0-9_.-]", "-", name.lower()).strip("-") or "file"
+    return {"id": fid, "bot_id": _clean_str(f.get("bot_id"), 40),
+            "name": name, "kind": workspace_file_kind(name),
+            "content": content,
+            "size": len(content.encode("utf-8", "ignore")),
+            "ts": _clean_str(f.get("ts"), 40)}, None
+
+
+def reset_workspace(files, tools, keep_files=True):
+    """Reset a Bot's workspace. Files are kept by default (the
+    snapshot rule); the tools list is always cleared."""
+    good_files = []
+    for f in (files or []):
+        clean, err = validate_workspace_file(f)
+        if err is None:
+            good_files.append(clean)
+    return {"files": good_files if keep_files else [], "tools": []}
+
+
+def workspace_summary(files):
+    """Counts for a workspace file list."""
+    total = 0
+    kinds = {}
+    for f in (files or []):
+        clean, err = validate_workspace_file(f)
+        if err is not None:
+            continue
+        total += clean["size"]
+        kinds[clean["kind"]] = kinds.get(clean["kind"], 0) + 1
+    return {"count": sum(kinds.values()), "total_bytes": total,
+            "kinds": kinds}
+
+
+# --- v2.5 Skills as files ----------------------------------------------------
+
+def parse_skill_file(filename, content):
+    """Parse an uploaded text/markdown file into a Skill: the name
+    comes from the first '# ...' heading or the filename; steps are
+    the non-empty lines with bullets/numbers stripped."""
+    if not isinstance(content, str) or not content.strip():
+        return None, "Skill file khaali hai."
+    lines = [ln.strip() for ln in content.split("\n")]
+    name = ""
+    steps = []
+    for ln in lines:
+        if not ln:
+            continue
+        if not name and ln.startswith("#"):
+            name = ln.lstrip("#").strip()
+            continue
+        step = re.sub(r"^(\d+[.)]|[-*•])\s*", "", ln)
+        if step:
+            steps.append(step)
+    if not name:
+        base = (filename or "skill").rsplit(".", 1)[0]
+        name = re.sub(r"[-_]+", " ", base).strip().title() or "Skill"
+    clean, err = validate_skill({"name": name, "steps": steps})
+    if err:
+        return None, err
+    clean["source"] = "file"
+    clean["filename"] = _clean_str(filename, 120)
+    return clean, None
+
+
+def parse_skill_mention(message, skills):
+    """'@SkillName ...' at the start invokes that Skill. Returns the
+    skill dict (enabled only) or None. Longest matching name wins."""
+    text = (message or "").lstrip()
+    if not text.startswith("@"):
+        return None
+    rest = text[1:]
+    best = None
+    for skill in (skills or []):
+        if not isinstance(skill, dict) or not skill.get("enabled", True):
+            continue
+        name = skill.get("name") or ""
+        if not name:
+            continue
+        if rest.lower().startswith(name.lower()):
+            after = rest[len(name):]
+            if after == "" or after[0] in (" ", "\t", "\n"):
+                if best is None or len(name) > len(best.get("name", "")):
+                    best = skill
+    return best
+
+
+# --- v2.6 Team Bots ----------------------------------------------------------
+
+LEARNED_STATES = {"pending", "accepted", "rejected"}
+
+
+def validate_learned_item(item):
+    """One reviewable learned item (a Bot's proposed lesson)."""
+    if not isinstance(item, dict):
+        return None, "Learned item ghalat hai."
+    text = _clean_str(item.get("text"), 300)
+    if len(text) < 3:
+        return None, "Learned item me text chahiye."
+    state = _clean_str(item.get("state"), 20) or "pending"
+    if state not in LEARNED_STATES:
+        return None, "Learned item ki state ghalat hai."
+    iid = _clean_str(item.get("id"), 60)
+    if not iid:
+        iid = "ln-" + datetime.now().strftime("%Y%m%d%H%M%S%f")
+    return {"id": iid, "bot_id": _clean_str(item.get("bot_id"), 40),
+            "text": text, "state": state,
+            "ts": _clean_str(item.get("ts"), 40)}, None
+
+
+def validate_learned_list(items):
+    if not isinstance(items, list):
+        return []
+    clean = []
+    for item in items[:50]:
+        c, err = validate_learned_item(item)
+        if err is None:
+            clean.append(c)
+    return clean
+
+
+def team_primary(bots):
+    """The primary Bot of a shared team: the shared Bot marked
+    primary, else the first shared Bot, else None."""
+    shared = [b for b in (bots or [])
+              if isinstance(b, dict) and b.get("shared")]
+    if not shared:
+        return None
+    for b in shared:
+        if b.get("primary"):
+            return b
+    return shared[0]
+
+
+# --- v2.7 Templates, memory blurbs, inbox, export ---------------------------
+
+def bot_from_template(template_id, name=None):
+    """Create a new Bot from a starter template. Returns
+    (clean_bot, error)."""
+    template = None
+    for b in STARTER_BOTS:
+        if b["id"] == template_id:
+            template = b
+            break
+    if template is None:
+        return None, "Template nahi mila."
+    bot = dict(template)
+    if name:
+        bot["name"] = name
+    bot["id"] = (re.sub(r"[^a-z0-9-]", "-",
+                        (name or template["name"]).lower()).strip("-")
+                 or "bot") + "-" + datetime.now().strftime("%H%M%S")
+    return validate_bot(bot)
+
+
+def validate_memory_blurb(blurb):
+    """One UserMemoryBlurb — a single short memory snippet."""
+    if not isinstance(blurb, dict):
+        return None, "Memory snippet ghalat hai."
+    text = _clean_str(blurb.get("text"), 200)
+    if len(text) < 3:
+        return None, "Memory snippet me text chahiye."
+    bid = _clean_str(blurb.get("id"), 60)
+    if not bid:
+        bid = "mb-" + datetime.now().strftime("%Y%m%d%H%M%S%f")
+    return {"id": bid, "text": text,
+            "source": _clean_str(blurb.get("source"), 40) or "user",
+            "ts": _clean_str(blurb.get("ts"), 40)}, None
+
+
+def memory_blurbs(memory_text):
+    """Split a memory-card text into blurb records (one per line)."""
+    blurbs = []
+    for line in (memory_text or "").split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        clean, err = validate_memory_blurb({"text": line})
+        if err is None:
+            blurbs.append(clean)
+    return blurbs
+
+
+def validate_inbox_message(msg):
+    """Validate one per-project inbox message. Returns (clean, error)."""
+    if not isinstance(msg, dict):
+        return None, "Inbox message ghalat hai."
+    project = _clean_str(msg.get("project"), 80)
+    if len(project) < 2:
+        return None, "Inbox message me project ka naam chahiye."
+    body = _clean_str(msg.get("body"), 3000)
+    if len(body) < 3:
+        return None, "Inbox message me text chahiye."
+    mid = _clean_str(msg.get("id"), 60)
+    if not mid:
+        mid = "in-" + datetime.now().strftime("%Y%m%d%H%M%S%f")
+    status = _clean_str(msg.get("status"), 20) or "new"
+    if status not in ("new", "triaged", "done"):
+        return None, "Inbox message ki status ghalat hai."
+    return {"id": mid, "project": project,
+            "sender": _clean_str(msg.get("sender"), 120),
+            "subject": _clean_str(msg.get("subject"), 200),
+            "body": body, "bot_id": _clean_str(msg.get("bot_id"), 40),
+            "status": status, "ts": _clean_str(msg.get("ts"), 40)}, None
+
+
+def assign_inbox(msg, bot_id):
+    """Route an inbox message to a Bot (triaged)."""
+    msg, err = validate_inbox_message(msg)
+    if err:
+        return None, err
+    msg["bot_id"] = _clean_str(bot_id, 40)
+    msg["status"] = "triaged"
+    return msg, None
+
+
+def export_bot_bundle(bot, memory="", skills=None, routines=None,
+                      workspace_files=None):
+    """Export a Bot as a full definition bundle (JSON download).
+    Only validated pieces go in; nothing is pushed anywhere."""
+    bot, err = validate_bot(bot)
+    if err:
+        return None, err
+    clean_skills = []
+    for s in (skills or []):
+        c, e = validate_skill(s)
+        if e is None:
+            clean_skills.append(c)
+    clean_routines = []
+    for r in (routines or []):
+        c, e = validate_routine(r)
+        if e is None:
+            clean_routines.append(c)
+    clean_files = []
+    for f in (workspace_files or []):
+        c, e = validate_workspace_file(f)
+        if e is None:
+            clean_files.append(c)
+    return {"version": 2, "app": "hamkar",
+            "exported_at": datetime.now().isoformat(),
+            "bot": bot, "memory": validate_memory(memory),
+            "skills": clean_skills, "routines": clean_routines,
+            "workspace_files": clean_files}, None
+
+
+def build_automation_prompt(bot, automation, language="en"):
+    """Prompt for one Automation run (same shape as a Routine run)."""
+    lang_word = LANG_WORD.get(language, "English")
+    return (
+        f"You are {bot['name']}, a {bot['role']} AI teammate. "
+        f"You are running the Automation '{automation['name']}' "
+        f"(trigger: {automation['trigger']}).\n"
+        f"Task: {automation['task']}\n"
+        f"Your instructions: {bot['instructions']}\n"
+        f"Complete the task and report back in {lang_word}, under 1500 "
+        "characters. Reply with ONLY a JSON object, no markdown, no "
+        'extra text:\n{"reply": "The automation result.", '
+        '"remember": ["at most 3 short new facts, or []"], '
+        '"action": null, or {"type": "draft_email" | "draft_message" | '
+        '"plan" | "summary_note", "title": "short title", "body": '
+        '"the full draft text"} — only when a draft is the useful '
+        "result of this automation.}")

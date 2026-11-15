@@ -79,6 +79,46 @@ def api_routine(body: dict):
     return {"ok": True, **result}
 
 
+@router.post("/api/automation")
+def api_automation(body: dict):
+    result, err = gemini.run_automation(
+        body.get("bot") or {}, body.get("automation") or {},
+        language=body.get("language") or "en")
+    if err:
+        return _bad(err)
+    return {"ok": True, **result}
+
+
+@router.post("/api/skill-file")
+def api_skill_file(body: dict):
+    skill, err = engine.parse_skill_file(
+        body.get("filename") or "skill.txt",
+        body.get("content") or "")
+    if err:
+        return _bad(err)
+    return {"ok": True, "skill": skill}
+
+
+@router.post("/api/export-bot")
+def api_export_bot(body: dict):
+    bundle, err = engine.export_bot_bundle(
+        body.get("bot") or {}, body.get("memory") or "",
+        body.get("skills") or [], body.get("routines") or [],
+        body.get("workspace_files") or [])
+    if err:
+        return _bad(err)
+    return {"ok": True, "bundle": bundle}
+
+
+@router.post("/api/credential-request")
+def api_credential_request(body: dict):
+    req, err = engine.validate_credential_request(
+        body.get("request") or {})
+    if err:
+        return _bad(err)
+    return {"ok": True, "request": req}
+
+
 @router.post("/api/action")
 def api_action(body: dict):
     action, err = gemini.propose_action(

@@ -198,6 +198,278 @@ r = client.post("/hamkar/api/chat",
                 json={"bot": {"name": "X"}, "message": "hello"})
 check("bad bot rejected", r.json().get("ok") is False)
 
+# --- v2: approvals as a data object -----------------------------------------
+good_appr = {"bot_id": "tehqeeq", "bot": "Tehqeeq", "tool": "send_email",
+             "args": {"to": "clinic@example.com"}, "target": "Gmail",
+             "state": "pending"}
+clean, err = engine.validate_approval(good_appr)
+check("good approval validates",
+      err is None and clean["state"] == "pending", str(err))
+_, err = engine.validate_approval({**good_appr, "tool": "launch_missiles"})
+check("unknown approval tool rejected", err is not None)
+_, err = engine.validate_approval({**good_appr, "state": "maybe"})
+check("bad approval state rejected", err is not None)
+clean, err = engine.approval_from_action(
+    GOOD_BOT, {"type": "draft_email", "title": "Follow-up", "body": "Hi."})
+check("approval from action",
+      err is None and clean["tool"] == "draft_email"
+      and clean["state"] == "pending", str(err))
+decided, err = engine.decide_approval(clean, "approved", always_allow=True)
+check("decide approval",
+      err is None and decided["state"] == "approved"
+      and decided["always_allow"] is True, str(err))
+_, err = engine.decide_approval(decided, "denied")
+check("decided approval is terminal", err is not None)
+_, err = engine.decide_approval(clean, "maybe")
+check("bad decision rejected", err is not None)
+check("always-allow key",
+      engine.always_allow_key("tehqeeq", "send_email", "Gmail")
+      == "tehqeeq|send_email|Gmail")
+check("approval matches allow", engine.approval_matches_allow(
+    {"bot_id": "tehqeeq", "tool": "send_email", "target": "Gmail"},
+    ["tehqeeq|send_email|Gmail"]))
+check("approval mismatch no allow", not engine.approval_matches_allow(
+    {"bot_id": "tehqeeq", "tool": "send_email", "target": "Slack"},
+    ["tehqeeq|send_email|Gmail"]))
+check("approval summary names bot+tool",
+      "Tehqeeq" in engine.approval_summary(good_appr)
+      and "send email" in engine.approval_summary(good_appr))
+
+# --- v2: automations (split from routines) ----------------------------------
+good_auto = {"name": "Daily brief", "bot_id": "tehqeeq",
+             "task": "Write the morning brief.",
+             "trigger": "time", "schedule": "daily 08:00"}
+clean, err = engine.validate_automation(good_auto)
+check("good time automation validates",
+      err is None and clean["kind"] == "daily" and clean["time"] == "08:00",
+      str(err))
+clean, err = engine.validate_automation(
+    {**good_auto, "trigger": "manual", "schedule": "manual"})
+check("manual automation validates",
+      err is None and clean["trigger"] == "manual", str(err))
+clean, err = engine.validate_automation({**good_auto, "trigger": "webhook"})
+check("webhook automation gets a secret",
+      err is None and len(clean["webhook_secret"]) == 32, str(err))
+_, err = engine.validate_automation({**good_auto, "trigger": "smoke-signal"})
+check("bad trigger rejected", err is not None)
+_, err = engine.validate_automation({**good_auto, "schedule": "daily 25:00"})
+check("bad automation schedule rejected", err is not None)
+clean2, err = engine.rotate_webhook_secret(
+    {**good_auto, "trigger": "webhook", "webhook_secret": "a" * 32})
+check("webhook secret rotates",
+      err is None and clean2["webhook_secret"] != "a" * 32
+      and len(clean2["webhook_secret"]) == 32, str(err))
+_, err = engine.rotate_webhook_secret(good_auto)
+check("non-webhook rotate rejected", err is not None)
+check("time automation due Mon 08:00", engine.automation_due(
+    {"trigger": "time", "kind": "daily", "time": "08:00", "enabled": True},
+    mon_8))
+check("manual automation never due", not engine.automation_due(
+    {"trigger": "manual", "kind": "manual", "time": "", "enabled": True},
+    mon_8))
+check("webhook automation never due", not engine.automation_due(
+    {"trigger": "webhook", "kind": "manual", "time": "", "enabled": True},
+    mon_8))
+clean, err = engine.validate_run_entry(
+    {"name": "Daily brief", "ok": True, "result": "done"})
+check("run entry validates",
+      err is None and clean["name"] == "Daily brief", str(err))
+clean, err = engine.validate_run_entry(
+    {"routine": "Morning sweep", "ok": False, "result": "AI error"})
+check("run entry accepts routine key",
+      err is None and clean["name"] == "Morning sweep", str(err))
+clean, err = engine.validate_routine({**good_rt, "origin": "chat"})
+check("routine origin chat",
+      err is None and clean["origin"] == "chat", str(err))
+clean, _ = engine.validate_routine(good_rt)
+check("routine origin defaults to form", clean["origin"] == "form")
+aprompt = engine.build_automation_prompt(
+    GOOD_BOT, {"name": "Daily brief", "trigger": "time",
+               "task": "Write it."}, language="en")
+check("automation prompt names automation",
+      "Daily brief" in aprompt and "time" in aprompt)
+
+# --- v2: credentials vault ----------------------------------------------------
+good_cred = {"name": "Clinic Gmail", "type": "password",
+             "value": "s3cr3t-value"}
+clean, err = engine.validate_credential(good_cred)
+check("good credential validates",
+      err is None and clean["value"] == "s3cr3t-value", str(err))
+_, err = engine.validate_credential({"name": "Cred", "value": ""})
+check("empty credential value rejected", err is not None)
+_, err = engine.validate_credential(
+    {"name": "Cred", "type": "dna", "value": "v"})
+check("bad credential type rejected", err is not None)
+pub = engine.credential_public(clean)
+check("credential public hides value",
+      "value" not in pub and pub["name"] == "Clinic Gmail")
+check("redact scrubs secrets",
+      engine.redact_secrets("my key is s3cr3t-value ok", ["s3cr3t-value"])
+      == "my key is [redacted] ok")
+check("redact ignores short values",
+      engine.redact_secrets("abc def", ["ab"]) == "abc def")
+check("redact leaves clean text",
+      engine.redact_secrets("hello world", ["s3cr3t-value"]) == "hello world")
+clean, err = engine.validate_credential_request(
+    {"bot_id": "daftar", "bot": "Daftar", "credential_name": "Clinic Gmail",
+     "reason": "to check the inbox"})
+check("credential request validates",
+      err is None and clean["state"] == "pending", str(err))
+_, err = engine.validate_credential_request(
+    {"credential_name": "X", "reason": "y"})
+check("credential request needs reason", err is not None)
+
+# --- v2: per-bot workspace -----------------------------------------------------
+good_file = {"bot_id": "tehqeeq", "name": "notes.md",
+             "content": "# Notes\nhello"}
+clean, err = engine.validate_workspace_file(good_file)
+check("workspace file validates",
+      err is None and clean["kind"] == "markdown" and clean["size"] > 0,
+      str(err))
+check("file kind by extension",
+      engine.workspace_file_kind("data.json") == "json"
+      and engine.workspace_file_kind("a.txt") == "text"
+      and engine.workspace_file_kind("x.bin") == "other")
+_, err = engine.validate_workspace_file({"name": "x.txt", "content": 42})
+check("non-text file content rejected", err is not None)
+reset = engine.reset_workspace([good_file], ["calendar", "contacts"],
+                               keep_files=True)
+check("reset keeps files, clears tools",
+      len(reset["files"]) == 1 and reset["tools"] == [])
+reset = engine.reset_workspace([good_file], ["calendar"], keep_files=False)
+check("reset can drop files too",
+      reset["files"] == [] and reset["tools"] == [])
+summ = engine.workspace_summary(
+    [good_file, {"bot_id": "t", "name": "a.json", "content": "{}"}])
+check("workspace summary counts",
+      summ["count"] == 2 and summ["kinds"].get("markdown") == 1
+      and summ["kinds"].get("json") == 1, str(summ))
+
+# --- v2: skills as files --------------------------------------------------------
+clean, err = engine.parse_skill_file(
+    "news-brief.md",
+    "# Morning news brief\n- Find top stories\n- Summarise in 5 lines\n")
+check("skill file parses",
+      err is None and clean["name"] == "Morning news brief"
+      and len(clean["steps"]) == 2 and clean["source"] == "file", str(err))
+clean, err = engine.parse_skill_file(
+    "my-skill.txt", "1. Open the inbox\n2. Reply to urgent mail\n")
+check("skill file name from filename",
+      err is None and clean["name"] == "My Skill", str(err))
+_, err = engine.parse_skill_file("empty.md", "   \n")
+check("empty skill file rejected", err is not None)
+clean, err = engine.validate_skill(
+    {"name": "News", "steps": ["a"], "enabled": False,
+     "bots": ["tehqeeq"]})
+check("skill toggle + attach",
+      err is None and clean["enabled"] is False
+      and clean["bots"] == ["tehqeeq"], str(err))
+check("skill mention parses", engine.parse_skill_mention(
+    "@News brief do it",
+    [{"name": "News brief", "steps": ["a"], "enabled": True}]) is not None)
+check("disabled skill mention ignored", engine.parse_skill_mention(
+    "@News brief do it",
+    [{"name": "News brief", "steps": ["a"], "enabled": False}]) is None)
+check("skill mention needs @", engine.parse_skill_mention(
+    "News brief do it", [{"name": "News brief", "steps": ["a"]}]) is None)
+
+# --- v2: team bots ---------------------------------------------------------------
+clean, err = engine.validate_bot(
+    {**GOOD_BOT, "shared": True, "primary": True,
+     "learning_opt_in": True})
+check("team bot fields validate",
+      err is None and clean["shared"] is True and clean["primary"] is True
+      and clean["learning_opt_in"] is True, str(err))
+clean, err = engine.validate_learned_item(
+    {"bot_id": "tehqeeq", "text": "User likes short briefs"})
+check("learned item validates",
+      err is None and clean["state"] == "pending", str(err))
+_, err = engine.validate_learned_item({"text": "x"})
+check("short learned item rejected", err is not None)
+_, err = engine.validate_learned_item(
+    {"text": "valid text", "state": "absorbed"})
+check("bad learned state rejected", err is not None)
+primary = engine.team_primary(
+    [{"id": "a", "shared": True},
+     {"id": "b", "shared": True, "primary": True}])
+check("team primary picked", primary is not None and primary["id"] == "b")
+check("no shared bots, no primary",
+      engine.team_primary([{"id": "a"}]) is None)
+
+# --- v2: templates, memory blurbs, inbox, export --------------------------------
+clean, err = engine.bot_from_template("tehqeeq", "Tehqeeq 2")
+check("bot from template",
+      err is None and clean["role"] == "Research Bot"
+      and clean["name"] == "Tehqeeq 2", str(err))
+_, err = engine.bot_from_template("nope")
+check("bad template rejected", err is not None)
+clean, err = engine.validate_memory_blurb({"text": "User likes tea"})
+check("memory blurb validates",
+      err is None and clean["text"] == "User likes tea", str(err))
+blurbs = engine.memory_blurbs("likes tea\n\nprefers mornings\n")
+check("memory blurbs split lines", len(blurbs) == 2, str(blurbs))
+clean, err = engine.validate_inbox_message(
+    {"project": "PharmaReg", "sender": "a@b.com", "subject": "Hi",
+     "body": "Please review."})
+check("inbox message validates",
+      err is None and clean["status"] == "new", str(err))
+_, err = engine.validate_inbox_message({"project": "P", "body": "x"})
+check("inbox needs project + body", err is not None)
+assigned, err = engine.assign_inbox(
+    {"project": "PharmaReg", "body": "Please review."}, "daftar")
+check("inbox assign triages",
+      err is None and assigned["bot_id"] == "daftar"
+      and assigned["status"] == "triaged", str(err))
+bundle, err = engine.export_bot_bundle(
+    GOOD_BOT, "likes tea", [{"name": "News", "steps": ["a"]}],
+    [good_rt], [good_file])
+check("export bundle v2",
+      err is None and bundle["version"] == 2
+      and bundle["bot"]["name"] == "Tehqeeq"
+      and len(bundle["skills"]) == 1 and len(bundle["routines"]) == 1
+      and len(bundle["workspace_files"]) == 1, str(err))
+
+# --- v2: routes -------------------------------------------------------------------
+r = client.post("/hamkar/api/skill-file",
+                json={"filename": "news.md",
+                      "content": "# News\n- Find stories\n"})
+check("skill-file route",
+      r.status_code == 200 and r.json().get("ok") is True
+      and r.json()["skill"]["name"] == "News", str(r.json()))
+r = client.post("/hamkar/api/skill-file",
+                json={"filename": "e.md", "content": "  "})
+check("skill-file route rejects empty", r.json().get("ok") is False)
+r = client.post("/hamkar/api/export-bot",
+                json={"bot": GOOD_BOT, "memory": "likes tea", "skills": [],
+                      "routines": [], "workspace_files": []})
+check("export-bot route",
+      r.status_code == 200 and r.json().get("ok") is True
+      and r.json()["bundle"]["version"] == 2, str(r.json()))
+r = client.post("/hamkar/api/credential-request",
+                json={"request": {"bot_id": "daftar", "bot": "Daftar",
+                                 "credential_name": "Gmail",
+                                 "reason": "check inbox"}})
+check("credential-request route",
+      r.status_code == 200 and r.json().get("ok") is True, str(r.json()))
+r = client.post("/hamkar/api/automation",
+                json={"bot": GOOD_BOT,
+                      "automation": {"name": "Auto", "task": "Do it",
+                                     "trigger": "manual"}})
+check("automation without key fails honestly",
+      r.status_code == 200 and r.json().get("ok") is False
+      and "GEMINI_API_KEY" in r.json().get("error", ""))
+
+# --- v2: page markers ---------------------------------------------------------------
+r = client.get("/hamkar")
+check("page has Vault", "Credentials Vault" in r.text)
+check("page has Automations", "Automations" in r.text)
+check("page has Workspace", "Workspace" in r.text)
+check("page has Inbox", "Project inbox" in r.text)
+check("page has Team Bots", "Team Bots" in r.text)
+check("page uses hamkar-v2 key", "hamkar-v2" in r.text)
+check("page states webhook limit",
+      "Webhook triggers need a server endpoint" in r.text)
+
 print(f"\n{len(FAIL)} FAILURES, {PASS} checks passed")
 for f in FAIL:
     print("FAIL:", f)
