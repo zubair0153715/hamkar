@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hamkar v2 — AI Teammates (ہمراہ کار)</title>
+<style>
+*{box-sizing:border-box} body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
+header{background:#1e293b;padding:14px 18px;border-bottom:1px solid #334155}
+header h1{margin:0;font-size:22px} header h1 span{color:#38bdf8}
+header p{margin:4px 0 0;color:#94a3b8;font-size:13px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#14532d;color:#bbf7d0}
+.badge.off{background:#7f1d1d;color:#fecaca}
+.wrap{display:grid;grid-template-columns:250px 1fr 300px;gap:12px;padding:12px;max-width:1400px;margin:0 auto}
+@media(max-width:900px){.wrap{grid-template-columns:1fr}}
+.card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:12px;margin-bottom:12px}
+.card h2{margin:0 0 8px;font-size:15px;color:#7dd3fc}
+.card h3{margin:10px 0 6px;font-size:13px;color:#94a3b8}
+button{background:#0284c7;color:#fff;border:0;border-radius:6px;padding:7px 12px;cursor:pointer;font-size:13px}
+button.ghost{background:#334155} button.danger{background:#b91c1c} button.ok{background:#15803d}
+button:disabled{opacity:.5;cursor:default}
+input,select,textarea{width:100%;background:#0f172a;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:7px;margin:4px 0;font-size:13px}
+textarea{min-height:64px}
+.botitem{padding:8px;border-radius:8px;cursor:pointer;margin-bottom:6px;border:1px solid transparent}
+.botitem:hover{background:#273449}.botitem.on{background:#0c4a6e;border-color:#0284c7}
+.botitem b{font-size:14px}.botitem small{display:block;color:#94a3b8}
+#chat{height:52vh;overflow-y:auto;border:1px solid #334155;border-radius:8px;padding:10px;background:#0f172a}
+.msg{margin:8px 0;padding:8px 10px;border-radius:8px;max-width:92%;white-space:pre-wrap;line-height:1.5;font-size:14px}
+.msg.user{background:#0c4a6e;margin-left:auto}.msg.bot{background:#1e293b}
+.msg .who{font-size:11px;color:#7dd3fc;display:block;margin-bottom:3px}
+.msg .act{font-size:11px;color:#fbbf24;display:block;margin-top:5px}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.row>*{flex:1}.row button{flex:0 0 auto}
+.note{font-size:12px;color:#94a3b8;line-height:1.5}
+.pill{display:inline-block;background:#334155;border-radius:999px;padding:2px 8px;font-size:11px;margin:2px}
+.appr{border:1px solid #475569;border-radius:8px;padding:8px;margin-bottom:8px}
+.appr pre{white-space:pre-wrap;font-size:12px;background:#0f172a;padding:8px;border-radius:6px;max-height:180px;overflow:auto}
+.log{font-size:12px;color:#cbd5e1}.log div{border-bottom:1px solid #273449;padding:5px 0}
+.kbd{font-size:11px;color:#94a3b8}
+details{margin:6px 0} summary{cursor:pointer;color:#7dd3fc;font-size:13px}
+input[type=checkbox]{width:auto}
+</style></head><body>
+<header><h1>Hamkar <span>ہمراہ کار</span> v2 — AI Teammates</h1>
+<p>Named AI Bots with roles, memory, Skills, Routines, Automations, a Vault and an approval queue. Free, no account, no card. <span id="aistatus" class="badge off">AI: checking…</span></p>
+<p class="note">Honest limits: AI replies need the owner's Gemini key (free quota). Without it, Bots, Skills, Routines, Automations, memory, Vault, workspaces and export/import still work. Routines and Automations run while this page is open — there is no server cron. No cloud computer per Bot — each Bot's workspace is local files in your browser. No real web browsing, email sending, meeting joins or live connectors. Webhook triggers need a server endpoint (not in this build) — use Run now or a time trigger. A Bot only <b>proposes</b> actions; nothing is ever sent, deleted or published without your approval. Vault values are never shown in chat, never logged, never pasted into messages.</p></header>
+<div class="wrap">
+<div>
+  <div class="card"><h2>🤖 My Bots</h2><div id="botlist"></div>
+    <h3>New Bot</h3>
+    <input id="nb-name" placeholder="Name, e.g. Sehat">
+    <input id="nb-role" placeholder="Role, e.g. Health Bot">
+    <textarea id="nb-inst" placeholder="Instructions — what this Bot does, in 1–2 lines"></textarea>
+    <div class="row"><select id="nb-lang"><option value="en">English</option><option value="roman">Roman Urdu</option><option value="ur">Urdu</option></select>
+    <button onclick="addBot()">+ Add Bot</button></div>
+    <h3>Team share</h3>
+    <div class="row"><button class="ghost" onclick="exportBot()">Export active Bot</button>
+    <button class="ghost" onclick="document.getElementById('impfile').click()">Import Bot</button></div>
+    <input type="file" id="impfile" accept=".json" style="display:none" onchange="importBot(event)">
+    <p class="note">Export a Bot as a full bundle (Bot + memory + Skills + Routines + workspace files) and share it — teammates import the same teammate. (Grok Bot's Team Bots, free version.)</p>
+  </div>
+  <div class="card"><h2>👥 Team Bots</h2>
+    <p class="note">Share a Bot with your team: shared files, one primary Bot, learning opt-in. Learned items are reviewable — nothing is learned silently.</p>
+    <div id="teamlist"></div>
+    <h3>📚 Learned items (review)</h3><div id="learnlist"></div>
+  </div>
+  <div class="card"><h2>🧠 Memory card</h2>
+    <p class="note">What <b id="memname">—</b> remembers. You can see and edit everything — nothing hidden.</p>
+    <textarea id="memory" rows="4" placeholder="Facts the Bot should remember…"></textarea>
+    <div class="row"><button class="ghost" onclick="saveMemory()">Save memory</button>
+    <button class="ghost" onclick="summarizeChat()">✨ Summarise chat → memory</button></div>
+    <div class="row"><button class="ghost" onclick="proposeLearned()">🌱 Propose as learned item</button></div>
+    <h3>Snippets</h3><div id="blurbs" class="log"></div>
+  </div>
+  <div class="card"><h2>🔐 Credentials Vault</h2>
+    <p class="note">Values are stored only in your browser and <b>never shown</b> — not in chat, not in logs, not on screen. A Bot asks for a credential; you fill it in the dedicated field below.</p>
+    <input id="vault-name" placeholder="Credential name, e.g. Clinic Gmail">
+    <div class="row"><select id="vault-type"><option value="password">Password</option><option value="api_key">API key</option><option value="token">Token</option><option value="other">Other</option></select>
+    <input id="vault-value" type="password" placeholder="Value (never displayed)"></div>
+    <button onclick="addVault()">+ Save to Vault</button>
+    <div id="vaultlist" style="margin-top:8px"></div>
+    <h3>Bot credential requests</h3>
+    <div class="row"><select id="vc-bot"></select></div>
+    <input id="vc-name" placeholder="Credential name the Bot needs">
+    <input id="vc-reason" placeholder="Why? e.g. to check the inbox">
+    <button class="ghost" onclick="requestCredential()">Ask Bot to request it</button>
+    <div id="creqlist" style="margin-top:8px"></div>
+  </div>
+</div>
+<div>
+  <div class="card"><h2>💬 <span id="chattitle">Chat</span></h2>
+    <div class="row" style="margin-bottom:6px">
+      <select id="skillpick" title="Skill"><option value="">Skill: none</option></select>
+      <label class="kbd"><input type="checkbox" id="voice"> 🔊 Read replies aloud</label>
+      <label class="kbd"><input type="checkbox" id="pastetoggle" onchange="document.getElementById('pastebox').style.display=this.checked?'block':'none'"> 📋 Paste text for the Bot</label>
+    </div>
+    <div id="pastebox" style="display:none"><textarea id="pasted" placeholder="Paste an email, article or notes here — the Bot will work on this text. (This is the honest version of a connector: no logins, your text stays in your browser.)"></textarea></div>
+    <div id="chat"></div>
+    <div class="row" style="margin-top:8px">
+      <input id="msg" placeholder="Message… (@BotName to hand off, @SkillName to use a Skill)" onkeydown="if(event.key==='Enter')sendMsg()">
+      <button onclick="sendMsg()">Send</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="ghost" onclick="suggestWork()">💡 Suggest work</button>
+      <button class="ghost" onclick="proposeAction()">✍️ Propose action…</button>
+      <button class="ghost" onclick="saveLastReplyAsRoutine()">💾 Save last reply as routine</button>
+      <select id="handoffto" title="Hand off to…"></select>
+      <button class="ghost" onclick="handoff()">↗️ Hand off</button>
+    </div>
+    <div id="suggest" style="margin-top:8px"></div>
+  </div>
+  <div class="card"><h2>✅ Approval queue</h2>
+    <p class="note">Every Bot tool call is a structured record: tool, target, state. Nothing is sent or done until you approve it. Tick “always allow” to remember a grant for that Bot + tool + target.</p>
+    <div id="approvals"></div>
+  </div>
+  <div class="card"><h2>📥 Project inbox</h2>
+    <p class="note">Messages arrive per project and route to a Bot — the honest version of Grok Bot's per-project inbox. The Bot reads them only when you send one to it.</p>
+    <input id="in-project" placeholder="Project, e.g. PharmaReg">
+    <input id="in-sender" placeholder="From, e.g. clinic@example.com">
+    <input id="in-subject" placeholder="Subject">
+    <textarea id="in-body" placeholder="Message body…"></textarea>
+    <button onclick="addInbox()">+ Add to inbox</button>
+    <div id="inboxlist" style="margin-top:8px"></div>
+  </div>
+</div>
+<div>
+  <div class="card"><h2>⏰ Routines</h2>
+    <p class="note">Saved behaviours, defined in chat (“save this as a routine”) or typed here. They run while this page stays open (checked every 30 seconds).</p>
+    <input id="rt-name" placeholder="Routine name, e.g. Morning sweep">
+    <input id="rt-sched" placeholder="Schedule: daily 08:00 / weekdays 08:00 / monday 10:30 / manual">
+    <textarea id="rt-task" placeholder="Task in plain words…"></textarea>
+    <div class="row"><select id="rt-bot"></select><button onclick="addRoutine()">+ Add routine</button></div>
+    <div id="routines"></div>
+    <h3>Run log</h3><div id="runlog" class="log"></div>
+  </div>
+  <div class="card"><h2>⚙️ Automations</h2>
+    <p class="note">Structured jobs: a trigger (time / manual / webhook), run history, pause, run-now. Webhook triggers need a server endpoint — in this build the secret is managed here and the job runs on its time trigger or Run now.</p>
+    <input id="au-name" placeholder="Automation name, e.g. Daily brief">
+    <select id="au-trigger" onchange="document.getElementById('au-sched-row').style.display=this.value==='time'?'flex':'none';document.getElementById('au-secret-row').style.display=this.value==='webhook'?'flex':'none'">
+      <option value="time">Trigger: time</option><option value="manual">Trigger: manual</option><option value="webhook">Trigger: webhook</option>
+    </select>
+    <div class="row" id="au-sched-row"><input id="au-sched" placeholder="Schedule: daily 08:00 / weekdays 08:00"></div>
+    <div class="row" id="au-secret-row" style="display:none"><input id="au-secret" readonly placeholder="Webhook secret — generated on save"><button class="ghost" onclick="genAuSecret()">Generate</button></div>
+    <textarea id="au-task" placeholder="Task in plain words…"></textarea>
+    <div class="row"><select id="au-bot"></select><button onclick="addAutomation()">+ Add automation</button></div>
+    <div id="automations"></div>
+    <h3>Run history</h3><div id="autolog" class="log"></div>
+  </div>
+  <div class="card"><h2>🎓 Skills — teach a task</h2>
+    <p class="note">A Skill is your preferred way of doing a task, saved as steps — or uploaded as a text/markdown file. Toggle it on/off, attach it to Bots, or invoke it with @SkillName in chat.</p>
+    <input id="sk-name" placeholder="Skill name, e.g. Morning news brief">
+    <textarea id="sk-steps" placeholder="Steps, one per line"></textarea>
+    <button onclick="addSkill()">+ Save skill</button>
+    <div class="row" style="margin-top:6px"><button class="ghost" onclick="document.getElementById('skfile').click()">📄 Upload skill file (.txt/.md)</button></div>
+    <input type="file" id="skfile" accept=".txt,.md" style="display:none" onchange="uploadSkillFile(event)">
+    <div id="skills"></div>
+  </div>
+  <div class="card"><h2>💻 Workspace — <span id="wsname">—</span></h2>
+    <p class="note">This Bot's own “computer”: files + tools, kept in your browser. Export it, or reset it — files stay, tools are cleared (the snapshot rule, local version).</p>
+    <div id="ws-summary" class="note"></div>
+    <div class="row"><button class="ghost" onclick="document.getElementById('wsfile').click()">📄 Upload file</button>
+    <button class="ghost" onclick="exportWorkspace()">⬇ Export workspace</button>
+    <button class="danger" onclick="resetWorkspace()">♻ Reset (keep files)</button></div>
+    <input type="file" id="wsfile" accept=".txt,.md,.json" style="display:none" onchange="addWsFile(event)">
+    <div id="ws-files" style="margin-top:8px"></div>
+    <h3>Tools this Bot may call (with approval)</h3>
+    <div class="row"><input id="ws-tool" placeholder="Tool, e.g. calendar"><button class="ghost" onclick="addWsTool()">+ Add tool</button></div>
+    <div id="ws-tools"></div>
+  </div>
+  <div class="card"><h2>📋 Bot templates</h2>
+    <p class="note">Start from a template — the 4 starter Bots, ready to copy and rename.</p>
+    <div id="templates"></div>
+  </div>
+</div>
+</div>
+<script>window.HAMKAR_STARTERS=[{"id": "tehqeeq", "name": "Tehqeeq", "emoji": "🔍", "role": "Research Bot", "instructions": "You research a topic and return a short, structured brief: what matters, the key facts, and what is still uncertain. Cite what the user gave you; never invent a source, a number or a quote. If something is not in the material, say so plainly."}, {"id": "daftar", "name": "Daftar", "emoji": "✉️", "role": "Inbox Bot", "instructions": "You triage messages the user pastes in: one-line summary, what it needs (reply / ignore / follow up), and a short draft reply in the user's tone. You never send anything yourself — you draft, the user approves."}, {"id": "mansooba", "name": "Mansooba", "emoji": "🗓️", "role": "Planner Bot", "instructions": "You turn goals into small, ordered plans with owners and next steps. You track what is unfinished and follow up on it. You keep plans short and realistic, and you ask when a date or an owner is missing instead of guessing."}, {"id": "karobar", "name": "Karobar", "emoji": "🤝", "role": "Sales Bot", "instructions": "You draft short, honest outreach: one message per company, naming the real fit, no hype, no fake claims, no invented numbers. You keep a note of who was contacted and what was promised, and you remind the user to follow up."}];</script><script>
+const KEY='hamkar-v2', OLDKEY='hamkar-v1';
+let S=null;
+function blank(){return {bots:[],activeBot:null,chats:{},memory:{},summaries:{},skills:[],routines:[],automations:[],automationRuns:[],approvals:[],runlog:[],vault:[],credRequests:[],workspaces:{},inbox:[],allowKeys:[],learned:{},lang:'en'};}
+function migrate(v1){const S2=blank();
+  S2.bots=(v1.bots||[]).map(b=>Object.assign({},b,{shared:!!b.shared,primary:!!b.primary,learning_opt_in:!!b.learning_opt_in}));
+  S2.activeBot=v1.activeBot;S2.chats=v1.chats||{};S2.memory=v1.memory||{};S2.summaries=v1.summaries||{};
+  S2.skills=(v1.skills||[]).map(s=>Object.assign({},s,{enabled:s.enabled!==false,bots:s.bots||[],source:s.source||'taught',filename:s.filename||''}));
+  S2.routines=(v1.routines||[]).map(r=>Object.assign({},r,{origin:r.origin||'form'}));
+  S2.approvals=(v1.approvals||[]).map(ap=>({id:ap.id,bot_id:'',bot:ap.bot,tool:ap.type,args:{title:ap.title,body:ap.body},target:'',state:ap.status==='approved'?'approved':ap.status==='rejected'?'denied':'pending',always_allow:false,ts:ap.ts||'',decided_ts:''}));
+  S2.runlog=v1.runlog||[];
+  return S2;}
+function save(){localStorage.setItem(KEY,JSON.stringify(S));}
+function load(){try{S=JSON.parse(localStorage.getItem(KEY));}catch(e){S=null;}
+  if(!S){try{const old=JSON.parse(localStorage.getItem(OLDKEY));if(old&&old.bots&&old.bots.length){S=migrate(old);save();}}catch(e){}}
+  if(!S||!S.bots)S=blank();
+  if(!S.bots.length){fetch('/hamkar/api/starters').then(r=>r.json()).then(d=>{S.bots=d.bots||[];S.activeBot=S.bots[0]?S.bots[0].id:null;save();renderAll();}).catch(()=>{if(window.HAMKAR_STARTERS){S.bots=JSON.parse(JSON.stringify(window.HAMKAR_STARTERS));S.activeBot=S.bots[0]?S.bots[0].id:null;save();renderAll();}});}
+  renderAll();}
+function bot(id){return S.bots.find(b=>b.id===id);}
+function active(){return bot(S.activeBot)||S.bots[0];}
+function ws(bid){if(!S.workspaces[bid])S.workspaces[bid]={files:[],tools:[]};return S.workspaces[bid];}
+function learned(bid){if(!S.learned[bid])S.learned[bid]=[];return S.learned[bid];}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function slug(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');}
+async function api(path,body){try{const r=await fetch('/hamkar/api/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});return await r.json();}catch(e){const ai=['chat','summarize','suggest','routine','automation','action'];return {ok:false,error:ai.indexOf(path)>=0?'AI is not available in this static build — AI replies need the owner\'s Gemini key on a server. Bots, memory, Skills, Vault and workspaces still work.':'This needs the Hamkar server and is not available in this static build.'};}}
+function downloadJSON(obj,filename){const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});const u=URL.createObjectURL(blob);const link=document.createElement('a');link.href=u;link.download=filename;link.click();URL.revokeObjectURL(u);}
+function renderAll(){renderBots();renderTeam();renderMemory();renderVault();renderChat();renderApprovals();renderInbox();renderRoutines();renderAutomations();renderSkills();renderWorkspace();renderTemplates();renderLog();
+  document.getElementById('memory').value=S.memory[S.activeBot]||'';
+  const a=active(); document.getElementById('memname').textContent=a?a.name:'—';
+  document.getElementById('wsname').textContent=a?a.name:'—';
+  document.getElementById('chattitle').textContent=a?('Chat — '+a.emoji+' '+a.name+' ('+a.role+')'):'Chat';}
+function renderBots(){const el=document.getElementById('botlist');el.innerHTML='';
+  S.bots.forEach(b=>{const d=document.createElement('div');d.className='botitem'+(b.id===S.activeBot?' on':'');
+    const tags=[b.shared?'🤝 shared':'',b.primary?'⭐ primary':'',b.learning_opt_in?'🌱 learning':''].filter(Boolean).join(' ');
+    d.innerHTML='<b>'+esc(b.emoji+' '+b.name)+'</b><small>'+esc(b.role)+' · '+esc(b.language)+(tags?' · '+esc(tags):'')+'</small>';
+    d.onclick=()=>{S.activeBot=b.id;save();renderAll();};el.appendChild(d);});
+  const hb=document.getElementById('handoffto');hb.innerHTML='<option value="">Hand off to…</option>';
+  S.bots.forEach(b=>{if(b.id!==S.activeBot)hb.innerHTML+='<option value="'+esc(b.id)+'">'+esc(b.name)+'</option>';});
+  const rb=document.getElementById('rt-bot');rb.innerHTML='';S.bots.forEach(b=>{rb.innerHTML+='<option value="'+esc(b.id)+'">'+esc(b.name)+'</option>';});
+  const ab=document.getElementById('au-bot');ab.innerHTML='';S.bots.forEach(b=>{ab.innerHTML+='<option value="'+esc(b.id)+'">'+esc(b.name)+'</option>';});
+  const vb=document.getElementById('vc-bot');vb.innerHTML='';S.bots.forEach(b=>{vb.innerHTML+='<option value="'+esc(b.id)+'">'+esc(b.name)+'</option>';});}
+function renderTeam(){const el=document.getElementById('teamlist');el.innerHTML='';
+  if(!S.bots.length){el.innerHTML='<p class="note">No Bots yet.</p>';}
+  S.bots.forEach(b=>{const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(b.emoji+' '+b.name)+'</b> '+(b.primary?'<span class="pill">⭐ primary</span>':'');
+    d.innerHTML+='<div class="row"><label class="kbd"><input type="checkbox" '+(b.shared?'checked':'')+' onchange="toggleShared(\''+b.id+'\',this.checked)"> Shared with team</label>'
+      +'<label class="kbd"><input type="radio" name="primarybot" '+(b.primary?'checked':'')+(b.shared?'':' disabled')+' onchange="setPrimary(\''+b.id+'\')"> Primary</label>'
+      +'<label class="kbd"><input type="checkbox" '+(b.learning_opt_in?'checked':'')+' onchange="toggleLearning(\''+b.id+'\',this.checked)"> Learning opt-in</label></div>';
+    el.appendChild(d);});
+  const ll=document.getElementById('learnlist');ll.innerHTML='';
+  let any=false;
+  S.bots.forEach(b=>{learned(b.id).forEach(it=>{any=true;const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(b.name)+'</b> <span class="pill">'+esc(it.state)+'</span><p class="note">'+esc(it.text)+'</p>';
+    if(it.state==='pending'){d.innerHTML+='<div class="row"><button class="ok" onclick="decideLearned(\''+b.id+'\',\''+it.id+'\',\'accepted\')">✓ Accept → memory</button><button class="danger" onclick="decideLearned(\''+b.id+'\',\''+it.id+'\',\'rejected\')">✕ Reject</button></div>';}
+    ll.appendChild(d);});});
+  if(!any)ll.innerHTML='<p class="note">No learned items yet. Turn learning opt-in on for a Bot and its new facts come here for review first.</p>';}
+function toggleShared(id,on){const b=bot(id);if(!b)return;b.shared=on;if(!on)b.primary=false;save();renderBots();renderTeam();}
+function setPrimary(id){S.bots.forEach(b=>{b.primary=(b.id===id);});save();renderBots();renderTeam();}
+function toggleLearning(id,on){const b=bot(id);if(!b)return;b.learning_opt_in=on;save();renderBots();renderTeam();}
+function decideLearned(bid,iid,st){const items=learned(bid);const it=items.find(x=>x.id===iid);if(!it)return;
+  it.state=st;
+  if(st==='accepted'){const cur=S.memory[bid]||'';if(cur.indexOf(it.text)<0)S.memory[bid]=(cur?cur+'\n':'')+it.text;}
+  save();renderTeam();renderMemory();}
+function proposeLearned(){const a=active();if(!a)return;const txt=document.getElementById('memory').value.trim();
+  if(txt.length<3){alert('Pehle memory likhein, phir propose karein.');return;}
+  txt.split('\n').map(s=>s.trim()).filter(Boolean).forEach(line=>{learned(a.id).push({id:'ln-'+Date.now()+Math.floor(Math.random()*999),bot_id:a.id,text:line.slice(0,300),state:'pending',ts:new Date().toISOString()});});
+  save();renderTeam();alert('Learned items review ke liye bhej diye.');}
+function renderMemory(){const a=active();const el=document.getElementById('blurbs');el.innerHTML='';
+  const txt=S.memory[S.activeBot]||'';
+  const lines=txt.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!lines.length){el.innerHTML='<p class="note">No snippets yet.</p>';return;}
+  lines.forEach(l=>{const d=document.createElement('div');d.textContent='• '+l.slice(0,200);el.appendChild(d);});}
+function renderVault(){const el=document.getElementById('vaultlist');el.innerHTML='';
+  if(!S.vault.length){el.innerHTML='<p class="note">Vault khaali hai.</p>';}
+  S.vault.forEach(c=>{const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(c.name)+'</b> <span class="pill">'+esc(c.type)+'</span> <span class="pill">value hidden</span><br><button class="danger" onclick="delVault(\''+c.id+'\')">Delete</button>';
+    el.appendChild(d);});
+  const rl=document.getElementById('creqlist');rl.innerHTML='';
+  if(!S.credRequests.length){rl.innerHTML='<p class="note">No requests.</p>';}
+  S.credRequests.forEach(r=>{const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(r.bot)+'</b> wants <b>'+esc(r.credential_name)+'</b> <span class="pill">'+esc(r.state)+'</span><p class="note">'+esc(r.reason)+'</p>';
+    if(r.state==='pending'){d.innerHTML+='<div class="row"><input type="password" id="crval-'+r.id+'" placeholder="Fill value here (never in chat)"><button class="ok" onclick="fillCredential(\''+r.id+'\')">Save to Vault</button><button class="danger" onclick="denyCredential(\''+r.id+'\')">Deny</button></div>';}
+    rl.appendChild(d);});}
+function addVault(){const name=document.getElementById('vault-name').value.trim();
+  const type=document.getElementById('vault-type').value;
+  const value=document.getElementById('vault-value').value;
+  if(name.length<2||!value){alert('Credential name + value chahiye.');return;}
+  if(S.vault.length>=50){alert('Max 50 credentials.');return;}
+  const id=slug(name)||('cred-'+Date.now());
+  S.vault.push({id,name,type,value,created:new Date().toISOString()});
+  save();renderVault();
+  document.getElementById('vault-name').value='';document.getElementById('vault-value').value='';}
+function delVault(id){S.vault=S.vault.filter(c=>c.id!==id);save();renderVault();}
+async function requestCredential(){const bid=document.getElementById('vc-bot').value;
+  const b=bot(bid)||active();if(!b){alert('Pehle Bot banayein.');return;}
+  const name=document.getElementById('vc-name').value.trim();
+  const reason=document.getElementById('vc-reason').value.trim();
+  if(name.length<2||reason.length<3){alert('Credential name + reason chahiye.');return;}
+  const res=await api('credential-request',{request:{bot_id:b.id,bot:b.name,credential_name:name,reason}});
+  if(!res.ok){alert(res.error);return;}
+  S.credRequests.unshift(Object.assign({},res.request,{ts:new Date().toISOString()}));
+  save();renderVault();
+  document.getElementById('vc-name').value='';document.getElementById('vc-reason').value='';}
+function fillCredential(rid){const r=S.credRequests.find(x=>x.id===rid);if(!r)return;
+  const inp=document.getElementById('crval-'+rid);const value=inp?inp.value:'';
+  if(!value){alert('Value likhein.');return;}
+  const id=slug(r.credential_name)||('cred-'+Date.now());
+  if(!S.vault.find(c=>c.id===id))S.vault.push({id,name:r.credential_name,type:'password',value,created:new Date().toISOString()});
+  r.state='filled';save();renderVault();alert('Saved to Vault. Value kabhi chat me nahi dikhayi jayegi.');}
+function denyCredential(rid){const r=S.credRequests.find(x=>x.id===rid);if(r){r.state='denied';save();renderVault();}}
+function renderChat(){const el=document.getElementById('chat');const a=active();el.innerHTML='';
+  const turns=S.chats[S.activeBot]||[];
+  if(!turns.length)el.innerHTML='<p class="note">No messages yet. Give '+esc(a?a.name:'this Bot')+' a job — or pick a Skill above.</p>';
+  turns.forEach(t=>{const d=document.createElement('div');d.className='msg '+(t.role==='user'?'user':'bot');
+    d.innerHTML='<span class="who">'+esc(t.role==='user'?'You':(a?a.name:'Bot'))+'</span>'+esc(t.text);
+    if(t.action)d.innerHTML+='<span class="act">📋 Action proposed → see Approval queue</span>';
+    el.appendChild(d);});
+  el.scrollTop=el.scrollHeight;}
+function addBot(){const name=document.getElementById('nb-name').value.trim();
+  const role=document.getElementById('nb-role').value.trim();
+  const inst=document.getElementById('nb-inst').value.trim();
+  const lang=document.getElementById('nb-lang').value;
+  if(name.length<2||inst.length<10){alert('Name (2+ chars) and instructions (10+ chars) needed.');return;}
+  const id=slug(name)||('bot-'+Date.now());
+  if(bot(id)){alert('A Bot with that name already exists.');return;}
+  if(S.bots.length>=20){alert('Max 20 Bots.');return;}
+  S.bots.push({id,name,emoji:'🤖',role:role||'Teammate',instructions:inst,language:lang,shared:false,primary:false,learning_opt_in:false});
+  S.activeBot=id;save();renderAll();
+  document.getElementById('nb-name').value='';document.getElementById('nb-role').value='';document.getElementById('nb-inst').value='';}
+function saveMemory(){S.memory[S.activeBot]=document.getElementById('memory').value.slice(0,1000);save();renderMemory();alert('Memory saved.');}
+function pushTurn(bid,role,text,action){(S.chats[bid]=S.chats[bid]||[]).push({role,text,action:!!action});S.chats[bid]=S.chats[bid].slice(-40);save();}
+function speak(t){if(!document.getElementById('voice').checked||!('speechSynthesis'in window))return;
+  try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang='en-US';speechSynthesis.speak(u);}catch(e){}}
+function rememberFacts(bid,facts){(facts||[]).forEach(f=>{const b=bot(bid);
+  if(b&&b.learning_opt_in){learned(bid).push({id:'ln-'+Date.now()+Math.floor(Math.random()*999),bot_id:bid,text:String(f).slice(0,300),state:'pending',ts:new Date().toISOString()});}
+  else{const cur=S.memory[bid]||'';if(cur.indexOf(f)<0)S.memory[bid]=(cur?cur+'\n':'')+f;}});}
+async function sendMsg(presetText,presetBotId){const inp=document.getElementById('msg');let text=(presetText!=null?presetText:inp.value).trim();if(!text)return;
+  const hit=(S.vault||[]).find(c=>c.value&&c.value.length>=4&&text.indexOf(c.value)>=0);
+  if(hit){alert('Ye message Vault ka secret ("'+hit.name+'") rakhta hai. Secrets kabhi chat me nahi aate — Vault request flow use karein.');return;}
+  let target=presetBotId?bot(presetBotId):active();
+  if(!target){alert('Pehle Bot banayein.');return;}
+  let skill=null;
+  const sm=text.match(/^\s*@(.+)/);
+  if(sm){const rest=sm[1];let foundSkill=null;
+    S.skills.forEach(s=>{if(s.enabled!==false&&rest.toLowerCase().startsWith(s.name.toLowerCase())&&(rest.length===s.name.length||/\s/.test(rest[s.name.length]))){if(!foundSkill||s.name.length>foundSkill.name.length)foundSkill=s;}});
+    if(foundSkill){skill=foundSkill;text=rest.slice(foundSkill.name.length).trim();}
+    else{let found=null;
+      S.bots.forEach(b=>{if(rest.toLowerCase().startsWith(b.name.toLowerCase())&&(rest.length===b.name.length||/\s/.test(rest[b.name.length]))){if(!found||b.name.length>found.name.length)found=b;}});
+      if(found){target=found;S.activeBot=found.id;text=rest.slice(found.name.length).trim();}}}
+  if(!text){inp.value='';return;}
+  if(!skill){const skillId=document.getElementById('skillpick').value;
+    skill=skillId?(S.skills.find(s=>s.id===skillId)||null):null;}
+  const pasted=document.getElementById('pastetoggle').checked?document.getElementById('pasted').value.trim():null;
+  pushTurn(target.id,'user',text);inp.value='';renderChat();
+  const res=await api('chat',{bot:target,memory:S.memory[target.id]||'',summary:S.summaries[target.id]||'',history:S.chats[target.id]||[],message:text,skill,pasted_text:pasted||null,language:target.language||'en'});
+  if(!res.ok){pushTurn(target.id,'bot','⚠️ '+res.error);renderChat();return;}
+  pushTurn(target.id,'bot',res.reply,!!res.action);
+  rememberFacts(target.id,res.remember||[]);
+  if(res.action)addApproval(target,res.action);
+  save();renderAll();speak(res.reply);}
+async function summarizeChat(){const a=active();const turns=S.chats[a.id]||[];
+  if(turns.length<2){alert('Summarise ke liye kam se kam 2 messages chahiye.');return;}
+  const res=await api('summarize',{bot:a,turns,language:a.language||'en'});
+  if(!res.ok){alert(res.error);return;}
+  S.summaries[a.id]=res.summary;save();alert('Summary saved into memory notes.');}
+async function suggestWork(){const a=active();
+  const res=await api('suggest',{bot:a,summary:S.summaries[a.id]||'',history:S.chats[a.id]||[],language:a.language||'en'});
+  const el=document.getElementById('suggest');
+  if(!res.ok){el.innerHTML='<p class="note">⚠️ '+esc(res.error)+'</p>';return;}
+  el.innerHTML='<h3>💡 Suggested work</h3>'+res.suggestions.map((s,i)=>'<div class="appr"><b>'+esc(s.title)+'</b><p class="note">'+esc(s.detail||'')+'</p><button onclick="doSuggestion('+i+')">Do it</button></div>').join('');
+  window._sug=res.suggestions;}
+function doSuggestion(i){const s=(window._sug||[])[i];if(!s)return;document.getElementById('msg').value=s.title+': '+s.detail;sendMsg();}
+async function proposeAction(){const a=active();
+  const inst=prompt('What should '+a.name+' draft? (e.g. "a follow-up email to the clinic about the demo")');
+  if(!inst||inst.trim().length<5)return;
+  const res=await api('action',{bot:a,memory:S.memory[a.id]||'',summary:S.summaries[a.id]||'',history:S.chats[a.id]||[],instruction:inst,language:a.language||'en'});
+  if(!res.ok){alert(res.error);return;}
+  addApproval(a,res.action);alert('Draft added to the Approval queue.');}
+function allowKey(bid,tool,target){return bid+'|'+tool+'|'+(target||'');}
+function addApproval(b,action,tool,target){tool=tool||action.type;target=target||'';
+  const ap={id:'ap'+Date.now()+Math.floor(Math.random()*999),bot_id:b.id,bot:b.name,tool,args:{title:action.title||'',body:action.body||''},target,state:'pending',always_allow:false,ts:new Date().toISOString(),decided_ts:''};
+  if(S.allowKeys.indexOf(allowKey(b.id,tool,target))>=0){ap.state='approved';ap.always_allow=true;ap.decided_ts=ap.ts;}
+  S.approvals.unshift(ap);save();renderApprovals();return ap;}
+function renderApprovals(){const el=document.getElementById('approvals');el.innerHTML='';
+  if(!S.approvals.length){el.innerHTML='<p class="note">No proposals yet.</p>';return;}
+  S.approvals.slice(0,10).forEach(ap=>{const d=document.createElement('div');d.className='appr';
+    const title=(ap.args&&ap.args.title)||ap.tool;
+    d.innerHTML='<b>'+esc(title)+'</b> <span class="pill">'+esc(ap.tool)+'</span> <span class="pill">'+esc(ap.bot)+'</span> <span class="pill">'+esc(ap.state)+'</span>'+(ap.target?' <span class="pill">on '+esc(ap.target)+'</span>':'')+'<pre>'+esc((ap.args&&ap.args.body)||'')+'</pre>';
+    if(ap.state==='pending'){d.innerHTML+='<label class="kbd"><input type="checkbox" id="allow-'+ap.id+'"> Always allow '+esc(ap.bot)+' to '+esc(ap.tool.replace(/_/g,' '))+(ap.target?' on '+esc(ap.target):'')+'</label><div class="row"><button class="ok" onclick="decideAppr(\''+ap.id+'\',\'approved\')">✓ Approve</button><button class="danger" onclick="decideAppr(\''+ap.id+'\',\'denied\')">✕ Deny</button></div>';}
+    else if(ap.state==='approved'){d.innerHTML+='<button class="ghost" onclick="copyAppr(\''+ap.id+'\')">📋 Copy text</button>';}
+    el.appendChild(d);});}
+function decideAppr(id,st){const ap=S.approvals.find(x=>x.id===id);if(!ap||ap.state!=='pending')return;
+  const cb=document.getElementById('allow-'+id);
+  ap.state=st;ap.decided_ts=new Date().toISOString();
+  if(st==='approved'&&cb&&cb.checked){ap.always_allow=true;const k=allowKey(ap.bot_id,ap.tool,ap.target);if(S.allowKeys.indexOf(k)<0)S.allowKeys.push(k);}
+  save();renderApprovals();}
+function copyAppr(id){const ap=S.approvals.find(x=>x.id===id);if(ap&&ap.args&&navigator.clipboard)navigator.clipboard.writeText(ap.args.body||'').then(()=>alert('Copied.'));}
+async function handoff(){const to=document.getElementById('handoffto').value;if(!to)return;
+  const a=active();
+  const res=await api('handoff',{source_bot:a,summary:S.summaries[a.id]||'',history:S.chats[a.id]||[]});
+  if(!res.ok){alert(res.error);return;}
+  const tb=bot(to);pushTurn(to,'bot','📥 Handoff from '+a.name+':\n'+res.brief);
+  S.activeBot=to;save();renderAll();}
+function renderInbox(){const el=document.getElementById('inboxlist');el.innerHTML='';
+  if(!S.inbox.length){el.innerHTML='<p class="note">Inbox khaali hai.</p>';return;}
+  S.inbox.forEach(m=>{const b=bot(m.bot_id);const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(m.subject||'(no subject)')+'</b> <span class="pill">'+esc(m.project)+'</span> <span class="pill">'+esc(m.status)+'</span><p class="note">From: '+esc(m.sender||'—')+'</p><pre>'+esc(m.body)+'</pre>';
+    d.innerHTML+='<div class="row"><select id="inbot-'+m.id+'">'+S.bots.map(x=>'<option value="'+esc(x.id)+'"'+(x.id===m.bot_id?' selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select>'
+      +'<button class="ghost" onclick="sendInboxToBot(\''+m.id+'\')">➡ Send to Bot</button>'
+      +'<button class="ghost" onclick="markInbox(\''+m.id+'\',\'done\')">✓ Done</button></div>';
+    el.appendChild(d);});}
+function addInbox(){const project=document.getElementById('in-project').value.trim();
+  const body=document.getElementById('in-body').value.trim();
+  if(project.length<2||body.length<3){alert('Project + message body chahiye.');return;}
+  const defBot=S.bots.find(b=>b.role.toLowerCase().indexOf('inbox')>=0)||S.bots[0];
+  S.inbox.unshift({id:'in-'+Date.now(),project,sender:document.getElementById('in-sender').value.trim(),subject:document.getElementById('in-subject').value.trim(),body,bot_id:defBot?defBot.id:'',status:'new',ts:new Date().toISOString()});
+  save();renderInbox();
+  document.getElementById('in-project').value='';document.getElementById('in-sender').value='';document.getElementById('in-subject').value='';document.getElementById('in-body').value='';}
+function markInbox(id,st){const m=S.inbox.find(x=>x.id===id);if(!m)return;m.status=st;save();renderInbox();}
+function sendInboxToBot(id){const m=S.inbox.find(x=>x.id===id);if(!m)return;
+  const sel=document.getElementById('inbot-'+id);const bid=sel?sel.value:m.bot_id;
+  if(!bid){alert('Pehle Bot chunein.');return;}
+  m.bot_id=bid;m.status='triaged';save();renderInbox();
+  S.activeBot=bid;renderAll();
+  sendMsg('Inbox message — project '+m.project+(m.subject?(', subject: '+m.subject):'')+':\n'+m.body, bid);}
+function renderSkills(){const el=document.getElementById('skills');el.innerHTML='';
+  const sel=document.getElementById('skillpick');const cur=sel.value;sel.innerHTML='<option value="">Skill: none</option>';
+  S.skills.forEach(s=>{if(s.enabled!==false)sel.innerHTML+='<option value="'+esc(s.id)+'">'+esc(s.name)+'</option>';
+    const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(s.name)+'</b> <span class="pill">'+esc(s.source||'taught')+'</span> <span class="pill">'+(s.enabled!==false?'on':'off')+'</span>'+(s.filename?' <span class="pill">'+esc(s.filename)+'</span>':'')+'<p class="note">'+s.steps.map((st,i)=>esc((i+1)+'. '+st)).join('<br>')+'</p>'
+      +'<div class="row"><button class="ghost" onclick="toggleSkill(\''+s.id+'\')">'+(s.enabled!==false?'⏸ Disable':'▶ Enable')+'</button><button class="danger" onclick="delSkill(\''+s.id+'\')">Delete</button></div>';
+    el.appendChild(d);});
+  sel.value=cur;}
+function addSkill(){const name=document.getElementById('sk-name').value.trim();
+  const steps=document.getElementById('sk-steps').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(name.length<2||!steps.length){alert('Skill name + at least 1 step needed.');return;}
+  if(S.skills.length>=50){alert('Max 50 Skills.');return;}
+  const id=slug(name)||('sk-'+Date.now());
+  S.skills.push({id,name,steps:steps.slice(0,20),enabled:true,bots:[],source:'taught',filename:''});save();renderSkills();
+  document.getElementById('sk-name').value='';document.getElementById('sk-steps').value='';}
+function toggleSkill(id){const s=S.skills.find(x=>x.id===id);if(s){s.enabled=s.enabled===false?true:false;save();renderSkills();}}
+function delSkill(id){S.skills=S.skills.filter(s=>s.id!==id);save();renderSkills();}
+function uploadSkillFile(ev){const f=ev.target.files[0];if(!f)return;
+  const rd=new FileReader();
+  rd.onload=async()=>{const res=await api('skill-file',{filename:f.name,content:String(rd.result||'')});
+    if(!res.ok){alert(res.error);return;}
+    const sk=res.skill;
+    if(S.skills.find(s=>s.id===sk.id))sk.id=sk.id+'-'+Date.now();
+    S.skills.push(sk);save();renderSkills();alert('Skill uploaded: '+sk.name);};
+  rd.readAsText(f);ev.target.value='';}
+function renderRoutines(){const el=document.getElementById('routines');el.innerHTML='';
+  if(!S.routines.length){el.innerHTML='<p class="note">No routines yet.</p>';return;}
+  S.routines.forEach(r=>{const b=bot(r.bot_id);const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(r.name)+'</b> <span class="pill">'+esc(r.schedule)+'</span> <span class="pill">'+esc(b?b.name:r.bot_id)+'</span> <span class="pill">'+(r.enabled?'on':'off')+'</span> <span class="pill">from '+(r.origin==='chat'?'chat':'form')+'</span><p class="note">'+esc(r.task)+'</p>';
+    d.innerHTML+='<div class="row"><button onclick="runRoutineNow(\''+r.id+'\')">▶ Run now</button><button class="ghost" onclick="toggleRoutine(\''+r.id+'\')">'+(r.enabled?'Pause':'Resume')+'</button><button class="danger" onclick="delRoutine(\''+r.id+'\')">Delete</button></div>';
+    el.appendChild(d);});}
+function addRoutine(){const name=document.getElementById('rt-name').value.trim();
+  const sched=document.getElementById('rt-sched').value.trim().toLowerCase();
+  const task=document.getElementById('rt-task').value.trim();
+  const bid=document.getElementById('rt-bot').value;
+  if(name.length<2||task.length<5){alert('Routine name + task needed.');return;}
+  if(!/^(manual|daily|weekdays|weekends|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+\d{1,2}:\d{2}$/.test(sched)&&sched!=='manual'){alert("Schedule like 'daily 08:00', 'weekdays 08:00', 'monday 10:30' or 'manual'.");return;}
+  if(S.routines.length>=50){alert('Max 50 Routines.');return;}
+  const id=slug(name)||('rt-'+Date.now());
+  const kind=sched==='manual'?'manual':sched.split(' ')[0];
+  const time=sched==='manual'?'':sched.split(' ')[1];
+  S.routines.push({id,name,bot_id:bid,task,schedule:sched,kind,time,origin:'form',enabled:true});
+  save();renderRoutines();
+  document.getElementById('rt-name').value='';document.getElementById('rt-sched').value='';document.getElementById('rt-task').value='';}
+function saveLastReplyAsRoutine(){const a=active();if(!a)return;
+  const turns=S.chats[a.id]||[];const last=[...turns].reverse().find(t=>t.role==='bot');
+  if(!last){alert('Pehle Bot se koi reply lein.');return;}
+  const name=prompt('Routine ka naam?','Routine from chat');
+  if(!name||name.trim().length<2)return;
+  const id=slug(name)||('rt-'+Date.now());
+  S.routines.push({id,name:name.trim(),bot_id:a.id,task:last.text.slice(0,1000),schedule:'manual',kind:'manual',time:'',origin:'chat',enabled:true});
+  save();renderRoutines();alert('Routine save ho gayi (chat-defined, manual).');}
+function toggleRoutine(id){const r=S.routines.find(x=>x.id===id);if(r){r.enabled=!r.enabled;save();renderRoutines();}}
+function delRoutine(id){S.routines=S.routines.filter(x=>x.id!==id);save();renderRoutines();}
+async function runRoutineNow(id){const r=S.routines.find(x=>x.id===id);if(!r)return;
+  const b=bot(r.bot_id)||active();if(!b){alert('Bot not found.');return;}
+  const res=await api('routine',{bot:b,routine:r,language:b.language||'en'});
+  const line={ts:new Date().toISOString(),routine:r.name,ok:!!res.ok,result:res.ok?res.reply:res.error};
+  S.runlog.unshift(line);S.runlog=S.runlog.slice(0,20);
+  if(res.ok){pushTurn(b.id,'bot','⏰ Routine "'+r.name+'":\n'+res.reply,!!res.action);
+    rememberFacts(b.id,res.remember||[]);
+    if(res.action)addApproval(b,res.action);}
+  save();renderAll();}
+function renderAutomations(){const el=document.getElementById('automations');el.innerHTML='';
+  if(!S.automations.length){el.innerHTML='<p class="note">No automations yet.</p>';return;}
+  S.automations.forEach(a=>{const b=bot(a.bot_id);const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(a.name)+'</b> <span class="pill">'+esc(a.trigger)+'</span> <span class="pill">'+esc(a.schedule)+'</span> <span class="pill">'+esc(b?b.name:a.bot_id)+'</span> <span class="pill">'+(a.enabled?'on':'off')+'</span><p class="note">'+esc(a.task)+'</p>';
+    if(a.trigger==='webhook'){d.innerHTML+='<p class="note">Webhook secret: <code>'+esc(a.webhook_secret||'')+'</code> <button class="ghost" onclick="rotateSecret(\''+a.id+'\')">↻ Rotate</button> <button class="ghost" onclick="copySecret(\''+a.id+'\')">📋 Copy</button></p><p class="note">Inbound webhook delivery needs a server endpoint (not in this build) — run it on its time trigger or Run now.</p>';}
+    d.innerHTML+='<div class="row"><button onclick="runAutomationNow(\''+a.id+'\')">▶ Run now</button><button class="ghost" onclick="toggleAutomation(\''+a.id+'\')">'+(a.enabled?'Pause':'Resume')+'</button><button class="danger" onclick="delAutomation(\''+a.id+'\')">Delete</button></div>';
+    el.appendChild(d);});}
+function genAuSecret(){const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);
+  document.getElementById('au-secret').value=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');}
+function addAutomation(){const name=document.getElementById('au-name').value.trim();
+  const trigger=document.getElementById('au-trigger').value;
+  const sched=document.getElementById('au-sched').value.trim().toLowerCase();
+  const task=document.getElementById('au-task').value.trim();
+  const bid=document.getElementById('au-bot').value;
+  if(name.length<2||task.length<5){alert('Automation name + task needed.');return;}
+  if(trigger==='time'&&!/^(daily|weekdays|weekends|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+\d{1,2}:\d{2}$/.test(sched)){alert("Time trigger needs a schedule like 'daily 08:00'.");return;}
+  if(S.automations.length>=50){alert('Max 50 Automations.');return;}
+  const id=slug(name)||('au-'+Date.now());
+  let secret='';
+  if(trigger==='webhook'){secret=document.getElementById('au-secret').value.trim();if(!secret){genAuSecret();secret=document.getElementById('au-secret').value.trim();}}
+  const kind=trigger==='time'?sched.split(' ')[0]:'manual';
+  const time=trigger==='time'?sched.split(' ')[1]:'';
+  S.automations.push({id,name,bot_id:bid,task,trigger,schedule:trigger==='time'?sched:trigger,kind,time,webhook_secret:secret,enabled:true});
+  save();renderAutomations();
+  document.getElementById('au-name').value='';document.getElementById('au-sched').value='';document.getElementById('au-task').value='';document.getElementById('au-secret').value='';}
+function toggleAutomation(id){const a=S.automations.find(x=>x.id===id);if(a){a.enabled=!a.enabled;save();renderAutomations();}}
+function delAutomation(id){S.automations=S.automations.filter(x=>x.id!==id);save();renderAutomations();}
+function rotateSecret(id){const a=S.automations.find(x=>x.id===id);if(!a||a.trigger!=='webhook')return;
+  const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);
+  a.webhook_secret=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');
+  save();renderAutomations();}
+function copySecret(id){const a=S.automations.find(x=>x.id===id);if(a&&navigator.clipboard)navigator.clipboard.writeText(a.webhook_secret||'').then(()=>alert('Secret copied.'));}
+async function runAutomationNow(id){const a=S.automations.find(x=>x.id===id);if(!a)return;
+  const b=bot(a.bot_id)||active();if(!b){alert('Bot not found.');return;}
+  const res=await api('automation',{bot:b,automation:a,language:b.language||'en'});
+  const line={ts:new Date().toISOString(),name:a.name,automation:a.name,ok:!!res.ok,result:res.ok?res.reply:res.error};
+  S.automationRuns.unshift(line);S.automationRuns=S.automationRuns.slice(0,50);
+  if(res.ok){pushTurn(b.id,'bot','⚙️ Automation "'+a.name+'":\n'+res.reply,!!res.action);
+    rememberFacts(b.id,res.remember||[]);
+    if(res.action)addApproval(b,res.action);}
+  save();renderAll();}
+function renderWorkspace(){const a=active();const w=a?ws(a.id):{files:[],tools:[]};
+  const el=document.getElementById('ws-summary');
+  const total=w.files.reduce((n,f)=>n+(f.size||0),0);
+  el.textContent=w.files.length+' file(s), '+(total/1024).toFixed(1)+' KB · '+w.tools.length+' tool(s)';
+  const fl=document.getElementById('ws-files');fl.innerHTML='';
+  if(!w.files.length)fl.innerHTML='<p class="note">No files yet — upload a .txt / .md / .json file for this Bot.</p>';
+  w.files.forEach(f=>{const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(f.name)+'</b> <span class="pill">'+esc(f.kind)+'</span> <span class="pill">'+(f.size||0)+' B</span>'
+      +'<div class="row"><button class="ghost" onclick="downloadWsFile(\''+f.id+'\')">⬇ Download</button><button class="danger" onclick="delWsFile(\''+f.id+'\')">Delete</button></div>';
+    fl.appendChild(d);});
+  const tl=document.getElementById('ws-tools');tl.innerHTML='';
+  if(!w.tools.length)tl.innerHTML='<p class="note">No tools yet. Tools are called only with your approval.</p>';
+  w.tools.forEach(t=>{const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(t)+'</b> <button class="danger" onclick="delWsTool(\''+esc(t)+'\')">Delete</button>';
+    tl.appendChild(d);});}
+function addWsFile(ev){const f=ev.target.files[0];if(!f)return;const a=active();if(!a)return;
+  if(f.size>200000){alert('File 200 KB se chhoti rakhein.');ev.target.value='';return;}
+  const rd=new FileReader();
+  rd.onload=()=>{const w=ws(a.id);
+    const id=slug(f.name)||('file-'+Date.now());
+    w.files=w.files.filter(x=>x.id!==id);
+    w.files.push({id,bot_id:a.id,name:f.name,content:String(rd.result||''),ts:new Date().toISOString()});
+    save();renderWorkspace();};
+  rd.readAsText(f);ev.target.value='';}
+function delWsFile(id){const a=active();if(!a)return;const w=ws(a.id);w.files=w.files.filter(f=>f.id!==id);save();renderWorkspace();}
+function downloadWsFile(id){const a=active();if(!a)return;const f=ws(a.id).files.find(x=>x.id===id);if(!f)return;
+  const blob=new Blob([f.content],{type:'text/plain'});const u=URL.createObjectURL(blob);const link=document.createElement('a');link.href=u;link.download=f.name;link.click();URL.revokeObjectURL(u);}
+function addWsTool(){const t=document.getElementById('ws-tool').value.trim();const a=active();if(!a||t.length<2)return;
+  const w=ws(a.id);if(w.tools.indexOf(t)<0)w.tools.push(t);save();renderWorkspace();
+  document.getElementById('ws-tool').value='';}
+function delWsTool(t){const a=active();if(!a)return;const w=ws(a.id);w.tools=w.tools.filter(x=>x!==t);save();renderWorkspace();}
+function exportWorkspace(){const a=active();if(!a)return;const w=ws(a.id);
+  downloadJSON({app:'hamkar',version:2,bot_id:a.id,exported_at:new Date().toISOString(),files:w.files,tools:w.tools},a.id+'.workspace.json');}
+function resetWorkspace(){const a=active();if(!a)return;
+  if(!confirm('Reset '+a.name+'’s workspace? Files stay, tools are cleared.'))return;
+  const w=ws(a.id);w.tools=[];save();renderWorkspace();alert('Workspace reset — files kept, tools cleared.');}
+function renderTemplates(){const el=document.getElementById('templates');el.innerHTML='';
+  const tpls=window._templates||[];
+  if(!tpls.length){el.innerHTML='<p class="note">Loading templates…</p>';return;}
+  tpls.forEach(t=>{const d=document.createElement('div');d.className='appr';
+    d.innerHTML='<b>'+esc(t.emoji+' '+t.name)+'</b> <span class="pill">'+esc(t.role)+'</span><p class="note">'+esc((t.instructions||'').slice(0,160))+'</p><button class="ghost" onclick="useTemplate(\''+t.id+'\')">Use template</button>';
+    el.appendChild(d);});}
+function useTemplate(tid){const t=(window._templates||[]).find(x=>x.id===tid);if(!t)return;
+  const name=prompt('New Bot name? (template: '+t.name+')',t.name);
+  if(!name||name.trim().length<2)return;
+  const id=slug(name)||('bot-'+Date.now());
+  if(bot(id)){alert('A Bot with that name already exists.');return;}
+  S.bots.push({id,name:name.trim(),emoji:t.emoji||'🤖',role:t.role,instructions:t.instructions,language:t.language||'en',shared:false,primary:false,learning_opt_in:false});
+  S.activeBot=id;save();renderAll();}
+async function exportBot(){const a=active();if(!a)return;
+  const w=ws(a.id);
+  const skills=S.skills.filter(s=>!s.bots||!s.bots.length||s.bots.indexOf(a.id)>=0);
+  const routines=S.routines.filter(r=>r.bot_id===a.id);
+  const res=await api('export-bot',{bot:a,memory:S.memory[a.id]||'',skills,routines,workspace_files:w.files});
+  if(!res.ok){alert(res.error);return;}
+  downloadJSON(res.bundle,a.id+'.hamkar.json');}
+function importBot(ev){const f=ev.target.files[0];if(!f)return;
+  const rd=new FileReader();
+  rd.onload=()=>{try{const data=JSON.parse(rd.result);
+      const b=data.version===2&&data.bot?data.bot:data;
+      if(!b.name||!b.instructions||b.instructions.length<10){alert('That file is not a valid Bot.');return;}
+      if(bot(b.id)){b.id=b.id+'-'+Date.now();}
+      const nb={id:String(b.id).slice(0,40),name:String(b.name).slice(0,40),emoji:(b.emoji||'🤖').slice(0,4),role:String(b.role||'Teammate').slice(0,80),instructions:String(b.instructions).slice(0,1500),language:['en','roman','ur'].includes(b.language)?b.language:'en',shared:!!b.shared,primary:false,learning_opt_in:!!b.learning_opt_in};
+      S.bots.push(nb);
+      if(data.version===2){
+        if(data.memory)S.memory[nb.id]=String(data.memory).slice(0,1000);
+        (data.skills||[]).forEach(s=>{if(!S.skills.find(x=>x.id===s.id))S.skills.push(Object.assign({},s,{enabled:s.enabled!==false,bots:s.bots||[]}));});
+        (data.routines||[]).forEach(r=>{r.bot_id=nb.id;if(!S.routines.find(x=>x.id===r.id))S.routines.push(Object.assign({},r,{origin:r.origin||'form'}));});
+        (data.workspace_files||[]).forEach(fl=>{fl.bot_id=nb.id;ws(nb.id).files.push(fl);});
+      }
+      S.activeBot=nb.id;save();renderAll();alert('Bot imported: '+nb.name);
+    }catch(e){alert('Could not read that file.');}};
+  rd.readAsText(f);ev.target.value='';}
+function renderLog(){const el=document.getElementById('runlog');el.innerHTML='';
+  if(!S.runlog.length){el.innerHTML='<p class="note">No runs yet.</p>';return;}
+  S.runlog.forEach(l=>{const d=document.createElement('div');
+    d.innerHTML='<b>'+esc(l.routine)+'</b> · '+esc(new Date(l.ts).toLocaleString())+' · '+(l.ok?'✅':'⚠️')+'<br>'+esc(l.result).slice(0,200);
+    el.appendChild(d);});
+  const al=document.getElementById('autolog');al.innerHTML='';
+  if(!S.automationRuns.length){al.innerHTML='<p class="note">No automation runs yet.</p>';return;}
+  S.automationRuns.slice(0,10).forEach(l=>{const d=document.createElement('div');
+    d.innerHTML='<b>'+esc(l.name)+'</b> · '+esc(new Date(l.ts).toLocaleString())+' · '+(l.ok?'✅':'⚠️')+'<br>'+esc(l.result).slice(0,200);
+    al.appendChild(d);});}
+// Scheduler: routines + time automations fire while this page is open (every 30s).
+const _fired={};
+const _DAYS={daily:[0,1,2,3,4,5,6],weekdays:[1,2,3,4,5],weekends:[0,6],sunday:[0],monday:[1],tuesday:[2],wednesday:[3],thursday:[4],friday:[5],saturday:[6]};
+setInterval(()=>{const now=new Date();const hhmm=now.toTimeString().slice(0,5);const wd=now.getDay();
+  S.routines.forEach(r=>{if(!r.enabled||r.kind==='manual'||!r.time)return;
+    if((_DAYS[r.kind]||[]).indexOf(wd)<0||r.time!==hhmm)return;
+    const key='r-'+r.id+'-'+now.toDateString()+'-'+hhmm;
+    if(_fired[key])return;_fired[key]=1;runRoutineNow(r.id);});
+  S.automations.forEach(a=>{if(!a.enabled||a.trigger!=='time'||!a.time)return;
+    if((_DAYS[a.kind]||[]).indexOf(wd)<0||a.time!==hhmm)return;
+    const key='a-'+a.id+'-'+now.toDateString()+'-'+hhmm;
+    if(_fired[key])return;_fired[key]=1;runAutomationNow(a.id);});
+},30000);
+(function(){var el=document.getElementById('aistatus');el.textContent='AI: off on static hosting — needs server key';el.className='badge off';})();
+fetch('/hamkar/api/starters').then(r=>r.json()).then(d=>{window._templates=d.bots||[];renderTemplates();}).catch(()=>{window._templates=window.HAMKAR_STARTERS||[];renderTemplates();});
+load();
+</script></body></html>
